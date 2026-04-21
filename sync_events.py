@@ -13,6 +13,7 @@
 import os, re, json, base64, tempfile
 from datetime import datetime, date
 from email.mime.text import MIMEText
+import email.utils as email_utils
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -65,17 +66,38 @@ def extract_dates(text):
     found = []
     year = datetime.now().year
 
+    # YYYYMMDD 形式 (例: 20260419)
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
             found.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
+
+    # YYYY年M月D日 形式
     for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})日', text):
         try:
             found.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
-    for m in re.finditer(r'(\d{1,2})[/月](\d{1,2})', text):
+
+    # M月D,D,D日 形式 (例: 4月3,6,9,22,23日)
+    for m in re.finditer(r'(\d{1,2})月([\d,、・\s]+)日', text):
+        mo = int(m.group(1))
+        if not (1 <= mo <= 12):
+            continue
+        for day_str in re.split(r'[,、・\s]+', m.group(2)):
+            day_str = day_str.strip()
+            if not day_str:
+                continue
+            try:
+                dy = int(day_str)
+                if 1 <= dy <= 31:
+                    found.append(date(year, mo, dy))
+            except ValueError:
+                pass
+
+    # M/D 形式 (例: 4/5, 4/17)
+    for m in re.finditer(r'(\d{1,2})/(\d{1,2})', text):
         try:
             mo, dy = int(m.group(1)), int(m.group(2))
             if 1 <= mo <= 12 and 1 <= dy <= 31:
@@ -183,8 +205,11 @@ def verify(subject, att_text):
 # ===== 通知メール =====
 def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
     headers = {h["name"]: h["value"] for h in original_msg["payload"]["headers"]}
-    to      = headers.get("From", "")
-    subj    = "Re: " + headers.get("Subject", "")
+    raw_from = headers.get("From", "")
+    # 表示名付き "名前 <email@domain>" からメールアドレスのみ抽出
+    _, addr = email_utils.parseaddr(raw_from)
+    to   = addr if addr else raw_from
+    subj = "Re: " + headers.get("Subject", "")
     body    = f"""件名と添付ファイルの内容に相違が見つかりました。
 確認・修正の上、再送してください。
 
