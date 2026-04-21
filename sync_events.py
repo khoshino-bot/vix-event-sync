@@ -422,14 +422,19 @@ def load_sheet_rows(sheets_svc, sheet_name):
             pass
     return row_map, sorted(date_rows)
 
-def execute_with_retry(request, max_retries=6):
-    """429/500/503 に対して指数バックオフでリトライ"""
+def execute_with_retry(request, max_retries=6, pace_sec=1.1):
+    """
+    429/500/503 に対して指数バックオフでリトライ。
+    成功時も pace_sec 待機してレートリミット(60req/min)を遵守。
+    """
     for attempt in range(max_retries):
         try:
-            return request.execute()
+            result = request.execute()
+            time.sleep(pace_sec)   # 成功後もペーシング（約54req/min < 60の上限）
+            return result
         except HttpError as e:
             if e.resp.status in (429, 500, 503) and attempt < max_retries - 1:
-                wait = 2 ** attempt   # 1, 2, 4, 8, 16, 32 秒
+                wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32, 64 秒
                 print(f"    [リトライ {attempt+1}/{max_retries-1}] HTTP {e.resp.status} → {wait}秒待機")
                 time.sleep(wait)
             else:
