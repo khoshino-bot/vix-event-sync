@@ -10,7 +10,7 @@
   添付なし → 件名のみで処理
 """
 
-import os, re, json, base64, tempfile, time
+import os, re, json, base64, tempfile, time, unicodedata
 from datetime import datetime, date, timedelta
 from collections import Counter
 from email.mime.text import MIMEText
@@ -60,7 +60,12 @@ def save_processed(ids):
     json.dump(list(ids), open(PROCESSED_FILE, "w"), indent=2)
 
 # ===== 情報抽出（正規表現）=====
+def nkfc(text: str) -> str:
+    """全角英数字・記号を半角に正規化（全角スラッシュ・チルダ等も対応）"""
+    return unicodedata.normalize('NFKC', text)
+
 def normalize_store(text):
+    text = nkfc(text)
     for store, keywords in STORE_MAP.items():
         if any(kw in text for kw in keywords):
             return store
@@ -96,8 +101,10 @@ def extract_dates(text):
       ④〜⑧を「implicit」として、(月,日)が explicit と重複しなければ追加。
     """
     cur_year = datetime.now().year
+    # 全角数字・スラッシュ・チルダ等を半角に統一してからパース
+    text = nkfc(text)
     explicit = set()
-    SEP = r'[〜~\-－]'  # 範囲区切り文字
+    SEP = r'[〜~\-]'  # 範囲区切り文字（NFKC後: 〜 のみ全角、他は半角）
 
     # ① YYYYMMDD 単発
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
