@@ -11,7 +11,8 @@
 """
 
 import os, re, json, base64, tempfile, time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from collections import Counter
 from email.mime.text import MIMEText
 import email.utils as email_utils
 from google.oauth2.credentials import Credentials
@@ -25,6 +26,8 @@ import openpyxl
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1ia4DThYgqZ3WdyeoQcBpKj5c_t8bJdYgFZIY7Ge2ubE")
 PROCESSED_FILE = "processed_ids.json"
 SENDER_DOMAIN  = os.environ.get("SENDER_DOMAIN", "vix.co.jp")
+# NOTIFY_EMAIL=true を GitHub Secrets にセットすると相違通知メールを送信する
+NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "false").lower() == "true"
 
 STORE_MAP = {
     "経堂":     ["経堂"],
@@ -63,57 +66,199 @@ def normalize_store(text):
             return store
     return None
 
+def _expand_range(start: date, end: date, max_days=31) -> list:
+    """start〜end を日単位に展開（最大max_days日）"""
+    if start > end:
+        return []
+    result = []
+    d = start
+    while d <= end and len(result) < max_days:
+        result.append(d)
+        d += timedelta(days=1)
+    return result
+
 def extract_dates(text):
     """
-    テキストから日付を抽出する。
-    年が明示されたパターン（YYYYMMDD / YYYY年M月D日）を優先し、
-    暗黙年パターン（M月D / M/D）は月日の重複がなければ今年で補完する。
-    """
-    year = datetime.now().year
-    explicit = set()  # 年が明示されている日付
+    テキストから日付を抽出する（範囲・コンテキスト年対応版）。
 
-    # YYYYMMDD 形式 (例: 20260419)
+    優先順位:
+      ① YYYYMMDD / YYYYMMDD.DD範囲（明示年）
+      ② YYYY年M月D日〜M月D日 範囲（明示年）
+      ③ YYYY年M月D日 単発（明示年）
+      以上を「explicit」として確定し、その(月,日)ペアをロック。
+      コンテキスト年 = explicit 内の最頻年（なければ今年）
+
+      ④ M/D〜M/D 範囲（コンテキスト年）
+      ⑤ M月D日〜M月D日 範囲（コンテキスト年）
+      ⑥ M月D〜D日 同月範囲（コンテキスト年）
+      ⑦ M月D,D,D日 / M月D.D.D日 リスト（コンテキスト年）
+      ⑧ M/D 単発（コンテキスト年）
+      ④〜⑧を「implicit」として、(月,日)が explicit と重複しなければ追加。
+    """
+    cur_year = datetime.now().year
+    explicit = set()
+    SEP = r'[〜~\-－]'  # 範囲区切り文字
+
+    # ① YYYYMMDD 単発
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
             explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
 
-    # YYYY年M月D日 形式
+    # ① YYYYMMDD.DD~DD.DD → 2つの同月範囲 (例: 20260408.11~14.18 → 4/8-11 と 4/14-18)
+    for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})[.](\d{1,2})' + SEP + r'(\d{1,2})[.](\d{1,2})', text):
+        yr, mo = int(m.group(1)), int(m.group(2))
+        try:
+            for d in _expand_range(date(yr, mo, int(m.group(3))), date(yr, mo, int(m.group(4)))):
+                explicit.add(d)
+            for d in _expand_range(date(yr, mo, int(m.group(5))), date(yr, mo, int(m.group(6)))):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ① YYYYMMDD.DD → 同月範囲 (例: 20260404.25 → 4/4〜4/25)
+    for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})[.](\d{1,2})', text):
+        yr, mo, d1, d2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        try:
+            for d in _expand_range(date(yr, mo, d1), date(yr, mo, d2)):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ② YYYY年M月D日〜M月D日 範囲（日あり形式）
+    for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})日' + SEP + r'(\d{1,2})月(\d{1,2})日', text):
+        yr = int(m.group(1))
+        try:
+            for d in _expand_range(date(yr, int(m.group(2)), int(m.group(3))),
+                                   date(yr, int(m.group(4)), int(m.group(5)))):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ② YYYY年M月D〜M月D日 範囲（始点の「日」なし形式 例: 2026年4月16〜4月27日）
+    for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})' + SEP + r'(\d{1,2})月(\d{1,2})日', text):
+        yr = int(m.group(1))
+        try:
+            for d in _expand_range(date(yr, int(m.group(2)), int(m.group(3))),
+                                   date(yr, int(m.group(4)), int(m.group(5)))):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ② YYYY年M月D日〜D日 同月範囲（終点の月なし 例: 2025年12月9日〜12日）
+    for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})日' + SEP + r'(\d{1,2})日', text):
+        yr, mo = int(m.group(1)), int(m.group(2))
+        try:
+            for d in _expand_range(date(yr, mo, int(m.group(3))),
+                                   date(yr, mo, int(m.group(4)))):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ② YYYY年M月D〜D日 同月範囲（始点の「日」なし 例: 2026年4月16〜27日）
+    for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})' + SEP + r'(\d{1,2})日', text):
+        yr, mo = int(m.group(1)), int(m.group(2))
+        try:
+            for d in _expand_range(date(yr, mo, int(m.group(3))),
+                                   date(yr, mo, int(m.group(4)))):
+                explicit.add(d)
+        except ValueError:
+            pass
+
+    # ② Extended: YYYY年M月 アンカーから前方スキャンして D日〜D日 / D日 を収集
+    # 例: "2025年12月9日〜12日、22日〜26日" → 9〜12 と 22〜26 を両方取得
+    for m in re.finditer(r'(20\d{2})年(\d{1,2})月', text):
+        yr, mo = int(m.group(1)), int(m.group(2))
+        chunk = text[m.end():m.end() + 120]
+        # 次の別月（M月）が現れたらそこで打ち切り
+        next_mo = re.search(r'\d+月', chunk)
+        if next_mo:
+            chunk = chunk[:next_mo.start()]
+        # D日〜D日 範囲（両端に日あり）
+        for rm in re.finditer(r'(\d{1,2})日' + SEP + r'(\d{1,2})日', chunk):
+            try:
+                for d in _expand_range(date(yr, mo, int(rm.group(1))),
+                                       date(yr, mo, int(rm.group(2)))):
+                    explicit.add(d)
+            except ValueError:
+                pass
+        # D〜D日 範囲（終端のみ日あり 例: 6~10日, 2~3日）
+        for rm in re.finditer(r'(\d{1,2})' + SEP + r'(\d{1,2})日', chunk):
+            try:
+                for d in _expand_range(date(yr, mo, int(rm.group(1))),
+                                       date(yr, mo, int(rm.group(2)))):
+                    explicit.add(d)
+            except ValueError:
+                pass
+        # D日 単発
+        for dm in re.finditer(r'(\d{1,2})日', chunk):
+            try:
+                explicit.add(date(yr, mo, int(dm.group(1))))
+            except ValueError:
+                pass
+
+    # ③ YYYY年M月D日 単発
     for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})日', text):
         try:
             explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
 
-    # 既に年が判明している (月, 日) のセット
+    # コンテキスト年: テキスト内の明示年の最頻値（なければ今年）
+    explicit_years = [int(y) for y in re.findall(r'(20\d{2})年', text)]
+    ctx_year = Counter(explicit_years).most_common(1)[0][0] if explicit_years else cur_year
+
     explicit_md = {(d.month, d.day) for d in explicit}
     implicit = set()
 
-    # M月D,D,D日 形式 (例: 4月3,6,9,22,23日)
-    for m in re.finditer(r'(\d{1,2})月([\d,、・\s]+)日', text):
-        mo = int(m.group(1))
-        if not (1 <= mo <= 12):
-            continue
-        for day_str in re.split(r'[,、・\s]+', m.group(2)):
-            day_str = day_str.strip()
-            if not day_str:
-                continue
+    def add_implicit(mo, dy):
+        if 1 <= mo <= 12 and 1 <= dy <= 31 and (mo, dy) not in explicit_md:
             try:
-                dy = int(day_str)
-                if 1 <= dy <= 31 and (mo, dy) not in explicit_md:
-                    implicit.add(date(year, mo, dy))
+                implicit.add(date(ctx_year, mo, dy))
             except ValueError:
                 pass
 
-    # M/D 形式 (例: 4/5, 4/17)
-    for m in re.finditer(r'(\d{1,2})/(\d{1,2})', text):
+    def add_range_implicit(mo1, d1, mo2, d2):
         try:
-            mo, dy = int(m.group(1)), int(m.group(2))
-            if 1 <= mo <= 12 and 1 <= dy <= 31 and (mo, dy) not in explicit_md:
-                implicit.add(date(year, mo, dy))
+            for d in _expand_range(date(ctx_year, mo1, d1), date(ctx_year, mo2, d2)):
+                if (d.month, d.day) not in explicit_md:
+                    implicit.add(d)
         except ValueError:
             pass
+
+    # ④ M/D〜M/D 範囲 (例: 4/12~4/16)
+    for m in re.finditer(r'(\d{1,2})/(\d{1,2})' + SEP + r'(\d{1,2})/(\d{1,2})', text):
+        add_range_implicit(int(m.group(1)), int(m.group(2)),
+                           int(m.group(3)), int(m.group(4)))
+
+    # ⑤ M月D日〜M月D日 範囲（年なし）
+    for m in re.finditer(r'(\d{1,2})月(\d{1,2})日' + SEP + r'(\d{1,2})月(\d{1,2})日', text):
+        add_range_implicit(int(m.group(1)), int(m.group(2)),
+                           int(m.group(3)), int(m.group(4)))
+
+    # ⑥ M月D〜D日 同月範囲 (例: 12月8〜12日, 4/16~27日)
+    for m in re.finditer(r'(\d{1,2})月(\d{1,2})' + SEP + r'(\d{1,2})日', text):
+        mo = int(m.group(1))
+        d1, d2 = int(m.group(2)), int(m.group(3))
+        add_range_implicit(mo, d1, mo, d2)
+
+    # ⑦ M月D,D,D日 / M月D.D.D日 リスト (例: 4月3,6,9日 / 4月16.17日)
+    for m in re.finditer(r'(\d{1,2})月([\d,、・.\s]+)日', text):
+        mo = int(m.group(1))
+        if not (1 <= mo <= 12):
+            continue
+        for day_str in re.split(r'[,、・.\s]+', m.group(2)):
+            day_str = day_str.strip()
+            if day_str:
+                try:
+                    add_implicit(mo, int(day_str))
+                except ValueError:
+                    pass
+
+    # ⑧ M/D 単発 (例: 4/5)
+    for m in re.finditer(r'(\d{1,2})/(\d{1,2})', text):
+        add_implicit(int(m.group(1)), int(m.group(2)))
 
     return sorted(explicit | implicit)
 
@@ -406,7 +551,10 @@ def main():
 
             if not ok:
                 print(f"    [不一致] {diff}")
-                send_discrepancy_email(gmail_svc, msg, subject, diff)
+                if NOTIFY_EMAIL:
+                    send_discrepancy_email(gmail_svc, msg, subject, diff)
+                else:
+                    print("    → 通知メール送信: スキップ（NOTIFY_EMAIL=false）")
                 processed.add(m["id"])
                 continue
 
