@@ -28,6 +28,11 @@ PROCESSED_FILE = "processed_ids.json"
 SENDER_DOMAIN  = os.environ.get("SENDER_DOMAIN", "vix.co.jp")
 # NOTIFY_EMAIL=true を GitHub Secrets にセットすると相違通知メールを送信する
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "false").lower() == "true"
+# RESET_PROCESSED=true で処理済みキャッシュを無視（シート再投入時に使用）
+RESET_PROCESSED = os.environ.get("RESET_PROCESSED", "false").lower() == "true"
+# FILTER_YYYYMM=202604 で対象年月を絞る（例: 202604 → 2026年4月分のみ）
+_fym = os.environ.get("FILTER_YYYYMM", "").strip()
+FILTER_YM = (int(_fym[:4]), int(_fym[4:])) if len(_fym) == 6 else None
 
 STORE_MAP = {
     "経堂":     ["経堂"],
@@ -515,7 +520,11 @@ def main():
     gmail_svc    = build("gmail",  "v1", credentials=gmail_creds)
     sheets_svc   = build("sheets", "v4", credentials=sheets_creds)
 
-    processed  = load_processed()
+    processed = set() if RESET_PROCESSED else load_processed()
+    if RESET_PROCESSED:
+        print("★ RESET_PROCESSED=true: 処理済みキャッシュをリセット")
+    if FILTER_YM:
+        print(f"★ FILTER_YYYYMM: {FILTER_YM[0]}年{FILTER_YM[1]}月分のみ対象")
     sheet_name = get_current_sheet_name()
     print(f"対象シート: {sheet_name}")
 
@@ -581,6 +590,9 @@ def main():
 
             if kind == "起案":
                 for d in dates:
+                    # 対象年月フィルタ
+                    if FILTER_YM and (d.year, d.month) != FILTER_YM:
+                        continue
                     date_rows, row_map = insert_event_row(
                         sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id
                     )
@@ -588,6 +600,9 @@ def main():
             else:
                 matched = False
                 for d in dates:
+                    # 対象年月フィルタ
+                    if FILTER_YM and (d.year, d.month) != FILTER_YM:
+                        continue
                     key = (store, d)
                     if key in row_map:
                         u = update_cell(sheets_svc, sheet_name, row_map[key], "振り返り")
