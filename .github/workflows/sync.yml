@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       - name: 依存ライブラリをインストール
-        run: pip install google-auth google-auth-httplib2 google-api-python-client python-pptx openpyxl anthropic
+        run: pip install google-auth google-auth-httplib2 google-api-python-client python-pptx openpyxl
 
       - name: 同期スクリプトを実行
         env:
@@ -36,6 +36,5 @@ jobs:
           SHEETS_CLIENT_SECRET: ${{ secrets.SHEETS_CLIENT_SECRET }}
           SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
-          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           SENDER_DOMAIN:        "vix.co.jp"
         run: python sync_events.py
