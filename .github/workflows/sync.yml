@@ -37,4 +37,5 @@ jobs:
           SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
           SENDER_DOMAIN:        "vix.co.jp"
+          TARGET_SHEET:         "星野テスト中"
         run: python sync_events.py

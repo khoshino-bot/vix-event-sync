@@ -392,6 +392,10 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
 
 # ===== シート操作 =====
 def get_current_sheet_name():
+    # TARGET_SHEET 環境変数が設定されていればそれを優先
+    override = os.environ.get("TARGET_SHEET", "").strip()
+    if override:
+        return override
     now = datetime.now()
     return f"{str(now.year)[2:]}{str(now.month).zfill(2)}"
 
