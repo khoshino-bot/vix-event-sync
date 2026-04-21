@@ -63,22 +63,31 @@ def normalize_store(text):
     return None
 
 def extract_dates(text):
-    found = []
+    """
+    テキストから日付を抽出する。
+    年が明示されたパターン（YYYYMMDD / YYYY年M月D日）を優先し、
+    暗黙年パターン（M月D / M/D）は月日の重複がなければ今年で補完する。
+    """
     year = datetime.now().year
+    explicit = set()  # 年が明示されている日付
 
     # YYYYMMDD 形式 (例: 20260419)
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
-            found.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
 
     # YYYY年M月D日 形式
     for m in re.finditer(r'(20\d{2})年(\d{1,2})月(\d{1,2})日', text):
         try:
-            found.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
         except ValueError:
             pass
+
+    # 既に年が判明している (月, 日) のセット
+    explicit_md = {(d.month, d.day) for d in explicit}
+    implicit = set()
 
     # M月D,D,D日 形式 (例: 4月3,6,9,22,23日)
     for m in re.finditer(r'(\d{1,2})月([\d,、・\s]+)日', text):
@@ -91,8 +100,8 @@ def extract_dates(text):
                 continue
             try:
                 dy = int(day_str)
-                if 1 <= dy <= 31:
-                    found.append(date(year, mo, dy))
+                if 1 <= dy <= 31 and (mo, dy) not in explicit_md:
+                    implicit.add(date(year, mo, dy))
             except ValueError:
                 pass
 
@@ -100,12 +109,12 @@ def extract_dates(text):
     for m in re.finditer(r'(\d{1,2})/(\d{1,2})', text):
         try:
             mo, dy = int(m.group(1)), int(m.group(2))
-            if 1 <= mo <= 12 and 1 <= dy <= 31:
-                found.append(date(year, mo, dy))
+            if 1 <= mo <= 12 and 1 <= dy <= 31 and (mo, dy) not in explicit_md:
+                implicit.add(date(year, mo, dy))
         except ValueError:
             pass
 
-    return sorted(set(found))
+    return sorted(explicit | implicit)
 
 # ===== 添付ファイル読み取り =====
 def extract_text_from_pptx(path):
@@ -261,9 +270,12 @@ def get_sheet_id(sheets_svc, sheet_name):
     return next(s["properties"]["sheetId"] for s in meta["sheets"]
                 if s["properties"]["title"] == sheet_name)
 
-def insert_event_row(sheets_svc, sheet_name, store, d):
-    _, date_rows = load_sheet_rows(sheets_svc, sheet_name)
-
+def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, sheet_id):
+    """
+    date_rows: [(date, row_num), ...] を受け取り、
+    APIを呼ばずにメモリ上で挿入位置を計算する。
+    挿入後の新しい date_rows を返す（再読み込み不要）。
+    """
     # 日付順の挿入位置を決定
     insert_at = 4
     for dt, row_num in date_rows:
@@ -272,7 +284,6 @@ def insert_event_row(sheets_svc, sheet_name, store, d):
             break
         insert_at = row_num + 1
 
-    sheet_id = get_sheet_id(sheets_svc, sheet_name)
     sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
         body={"requests": [{"insertDimension": {
@@ -293,6 +304,11 @@ def insert_event_row(sheets_svc, sheet_name, store, d):
         body={"values": [["〇", "", store, d.strftime("%Y/%m/%d")]]}
     ).execute()
     print(f"    → 行{insert_at}に挿入: {store} {d} 起案〇")
+
+    # 挿入行以降の行番号をメモリ上で+1ずらして新リストを返す
+    updated = [(dt, rn + 1) if rn >= insert_at else (dt, rn) for dt, rn in date_rows]
+    updated.append((d, insert_at))
+    return sorted(updated)
 
 def update_cell(sheets_svc, sheet_name, row_num, col):
     col_letter = "B" if col == "起案" else "C"
@@ -322,7 +338,8 @@ def main():
     print(f"対象シート: {sheet_name}")
 
     try:
-        row_map, _ = load_sheet_rows(sheets_svc, sheet_name)
+        row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
+        sheet_id = get_sheet_id(sheets_svc, sheet_name)
         print(f"既存行数: {len(row_map)}")
     except Exception as e:
         print(f"[ERROR] シート '{sheet_name}' を読めません: {e}")
@@ -332,6 +349,10 @@ def main():
 
     for kind, query in [("起案", f"from:@{SENDER_DOMAIN} 起案"),
                         ("振り返り", f"from:@{SENDER_DOMAIN} 振り返り")]:
+
+        # 振り返りは起案による行挿入後の最新状態が必要なため再読み込み
+        if kind == "振り返り":
+            row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
 
         result = gmail_svc.users().messages().list(
             userId="me", q=query, maxResults=50
@@ -375,10 +396,11 @@ def main():
 
             if kind == "起案":
                 for d in dates:
-                    insert_event_row(sheets_svc, sheet_name, store, d)
+                    date_rows = insert_event_row(
+                        sheets_svc, sheet_name, store, d, date_rows, sheet_id
+                    )
                     updated += 1
             else:
-                row_map, _ = load_sheet_rows(sheets_svc, sheet_name)
                 matched = False
                 for d in dates:
                     key = (store, d)
