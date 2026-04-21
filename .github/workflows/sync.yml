@@ -2,18 +2,17 @@ name: イベント起案・振り返り自動同期
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # 30分ごと
-  workflow_dispatch:           # 手動実行ボタン（テスト・緊急時用）
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      # processed_ids.json をキャッシュ（処理済みメールIDの永続化）
       - uses: actions/cache@v4
         with:
           path: processed_ids.json
@@ -26,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       - name: 依存ライブラリをインストール
-        run: pip install google-auth google-auth-httplib2 google-api-python-client
+        run: pip install google-auth google-auth-httplib2 google-api-python-client python-pptx openpyxl anthropic
 
       - name: 同期スクリプトを実行
         env:
@@ -37,5 +36,6 @@ jobs:
           SHEETS_CLIENT_SECRET: ${{ secrets.SHEETS_CLIENT_SECRET }}
           SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           SENDER_DOMAIN:        "vix.co.jp"
         run: python sync_events.py
