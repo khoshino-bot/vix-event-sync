@@ -1,0 +1,41 @@
+name: イベント起案・振り返り自動同期
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # 30分ごと
+  workflow_dispatch:           # 手動実行ボタン（テスト・緊急時用）
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # processed_ids.json をキャッシュ（処理済みメールIDの永続化）
+      - uses: actions/cache@v4
+        with:
+          path: processed_ids.json
+          key: processed-ids-${{ github.run_id }}
+          restore-keys: |
+            processed-ids-
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 依存ライブラリをインストール
+        run: pip install google-auth google-auth-httplib2 google-api-python-client
+
+      - name: 同期スクリプトを実行
+        env:
+          GMAIL_CLIENT_ID:      ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:  ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN:  ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          SHEETS_CLIENT_ID:     ${{ secrets.SHEETS_CLIENT_ID }}
+          SHEETS_CLIENT_SECRET: ${{ secrets.SHEETS_CLIENT_SECRET }}
+          SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
+          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          SENDER_DOMAIN:        "vix.co.jp"
+        run: python sync_events.py
