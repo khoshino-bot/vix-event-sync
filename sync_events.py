@@ -450,12 +450,15 @@ def get_sheet_id(sheets_svc, sheet_name):
     return next(s["properties"]["sheetId"] for s in meta["sheets"]
                 if s["properties"]["title"] == sheet_name)
 
-def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id):
+def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id,
+                     first_formatted_row=4):
     """
     重複チェック付き行挿入。
     - (store, d) が既に row_map に存在する場合はスキップ
-    - APIを呼ばずにメモリ上で挿入位置を計算
-    - 挿入後の (date_rows, row_map) をタプルで返す
+    - inheritFromBefore の選択:
+        insert_at > first_formatted_row → True（上の行から書式継承）
+        insert_at <= first_formatted_row → False（下の行=例行から書式継承）
+      これにより例行より前の日付でもドロップダウン書式が正しく引き継がれる
     """
     if (store, d) in row_map:
         print(f"    → スキップ(既存): {store} {d}")
@@ -469,6 +472,9 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
             break
         insert_at = row_num + 1
 
+    # 例行より後 → 上から継承、例行以前 → 下（例行）から継承
+    inherit_from_before = (insert_at > first_formatted_row)
+
     execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
         body={"requests": [{"insertDimension": {
@@ -478,7 +484,7 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
                 "startIndex": insert_at - 1,
                 "endIndex":   insert_at,
             },
-            "inheritFromBefore": True
+            "inheritFromBefore": inherit_from_before
         }}]}
     ))
 
@@ -531,7 +537,9 @@ def main():
     try:
         row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
         sheet_id = get_sheet_id(sheets_svc, sheet_name)
-        print(f"既存行数: {len(row_map)}")
+        # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
+        first_formatted_row = min(row_map.values()) if row_map else 4
+        print(f"既存行数: {len(row_map)}  書式基準行: {first_formatted_row}")
     except Exception as e:
         print(f"[ERROR] シート '{sheet_name}' を読めません: {e}")
         return
@@ -594,7 +602,8 @@ def main():
                     if FILTER_YM and (d.year, d.month) != FILTER_YM:
                         continue
                     date_rows, row_map = insert_event_row(
-                        sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id
+                        sheets_svc, sheet_name, store, d, date_rows, row_map,
+                        sheet_id, first_formatted_row
                     )
                     updated += 1
             else:
