@@ -10,13 +10,14 @@
   添付なし → 件名のみで処理
 """
 
-import os, re, json, base64, tempfile
+import os, re, json, base64, tempfile, time
 from datetime import datetime, date
 from email.mime.text import MIMEText
 import email.utils as email_utils
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from pptx import Presentation
 import openpyxl
 
@@ -265,17 +266,35 @@ def load_sheet_rows(sheets_svc, sheet_name):
             pass
     return row_map, sorted(date_rows)
 
+def execute_with_retry(request, max_retries=6):
+    """429/500/503 に対して指数バックオフでリトライ"""
+    for attempt in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if e.resp.status in (429, 500, 503) and attempt < max_retries - 1:
+                wait = 2 ** attempt   # 1, 2, 4, 8, 16, 32 秒
+                print(f"    [リトライ {attempt+1}/{max_retries-1}] HTTP {e.resp.status} → {wait}秒待機")
+                time.sleep(wait)
+            else:
+                raise
+
 def get_sheet_id(sheets_svc, sheet_name):
     meta = sheets_svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
     return next(s["properties"]["sheetId"] for s in meta["sheets"]
                 if s["properties"]["title"] == sheet_name)
 
-def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, sheet_id):
+def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id):
     """
-    date_rows: [(date, row_num), ...] を受け取り、
-    APIを呼ばずにメモリ上で挿入位置を計算する。
-    挿入後の新しい date_rows を返す（再読み込み不要）。
+    重複チェック付き行挿入。
+    - (store, d) が既に row_map に存在する場合はスキップ
+    - APIを呼ばずにメモリ上で挿入位置を計算
+    - 挿入後の (date_rows, row_map) をタプルで返す
     """
+    if (store, d) in row_map:
+        print(f"    → スキップ(既存): {store} {d}")
+        return date_rows, row_map
+
     # 日付順の挿入位置を決定
     insert_at = 4
     for dt, row_num in date_rows:
@@ -284,7 +303,7 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, sheet_id):
             break
         insert_at = row_num + 1
 
-    sheets_svc.spreadsheets().batchUpdate(
+    execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
         body={"requests": [{"insertDimension": {
             "range": {
@@ -295,33 +314,35 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, sheet_id):
             },
             "inheritFromBefore": True
         }}]}
-    ).execute()
+    ))
 
-    sheets_svc.spreadsheets().values().update(
+    execute_with_retry(sheets_svc.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{sheet_name}'!B{insert_at}:E{insert_at}",
         valueInputOption="RAW",
         body={"values": [["〇", "", store, d.strftime("%Y/%m/%d")]]}
-    ).execute()
+    ))
     print(f"    → 行{insert_at}に挿入: {store} {d} 起案〇")
 
-    # 挿入行以降の行番号をメモリ上で+1ずらして新リストを返す
-    updated = [(dt, rn + 1) if rn >= insert_at else (dt, rn) for dt, rn in date_rows]
-    updated.append((d, insert_at))
-    return sorted(updated)
+    # メモリ上で date_rows と row_map を更新（行挿入で以降の行番号が+1ずれる）
+    new_date_rows = [(dt, rn + 1) if rn >= insert_at else (dt, rn) for dt, rn in date_rows]
+    new_date_rows.append((d, insert_at))
+    new_row_map   = {(s, dt): (rn + 1 if rn >= insert_at else rn) for (s, dt), rn in row_map.items()}
+    new_row_map[(store, d)] = insert_at
+    return sorted(new_date_rows), new_row_map
 
 def update_cell(sheets_svc, sheet_name, row_num, col):
     col_letter = "B" if col == "起案" else "C"
     cell = f"'{sheet_name}'!{col_letter}{row_num}"
-    cur  = sheets_svc.spreadsheets().values().get(
+    cur  = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID, range=cell
-    ).execute()
+    ))
     if cur.get("values", [[""]])[0][0] == "〇":
         return False
-    sheets_svc.spreadsheets().values().update(
+    execute_with_retry(sheets_svc.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=cell,
         valueInputOption="RAW", body={"values": [["〇"]]}
-    ).execute()
+    ))
     return True
 
 # ===== メイン =====
@@ -396,8 +417,8 @@ def main():
 
             if kind == "起案":
                 for d in dates:
-                    date_rows = insert_event_row(
-                        sheets_svc, sheet_name, store, d, date_rows, sheet_id
+                    date_rows, row_map = insert_event_row(
+                        sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id
                     )
                     updated += 1
             else:
