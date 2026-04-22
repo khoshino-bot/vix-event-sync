@@ -438,6 +438,44 @@ def load_sheet_rows(sheets_svc, sheet_name):
             pass
     return row_map, sorted(date_rows)
 
+def deduplicate_sheet(sheets_svc, sheet_name, sheet_id):
+    """シート内の重複（店舗・日付）行を検出して削除する（後ろの行を優先して削除）"""
+    result = execute_with_retry(sheets_svc.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{sheet_name}'!A1:Z300"
+    ))
+    rows = result.get("values", [])
+    seen = {}
+    to_delete = []
+    for i, row in enumerate(rows):
+        if i < 3:
+            continue
+        store    = row[3].strip() if len(row) > 3 else ""
+        date_str = row[4].strip() if len(row) > 4 else ""
+        if not store or not date_str:
+            continue
+        key = (store, date_str)
+        if key in seen:
+            to_delete.append(i + 1)   # 後で出てきた方を削除
+        else:
+            seen[key] = i + 1
+    if not to_delete:
+        return
+    print(f"★ 重複行を削除: {len(to_delete)}行 {to_delete}")
+    # 後ろから削除して行番号ずれを防ぐ
+    for row_num in sorted(to_delete, reverse=True):
+        execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={"requests": [{"deleteDimension": {
+                "range": {
+                    "sheetId":    sheet_id,
+                    "dimension":  "ROWS",
+                    "startIndex": row_num - 1,
+                    "endIndex":   row_num,
+                }
+            }}]}
+        ))
+
 def execute_with_retry(request, max_retries=6, pace_sec=1.1):
     """
     429/500/503 に対して指数バックオフでリトライ。
@@ -576,8 +614,10 @@ def main():
     print(f"対象シート: {sheet_name}")
 
     try:
-        row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
         sheet_id = get_sheet_id(sheets_svc, sheet_name)
+        # 重複行クリーンアップ（過去の実行で残ったデータを除去）
+        deduplicate_sheet(sheets_svc, sheet_name, sheet_id)
+        row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
         # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
         first_formatted_row = min(row_map.values()) if row_map else 4
         print(f"既存行数: {len(row_map)}  書式基準行: {first_formatted_row}")
