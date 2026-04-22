@@ -587,8 +587,8 @@ def main():
 
     updated = 0
 
-    for kind, query in [("起案", f"from:@{SENDER_DOMAIN} 起案 in:inbox"),
-                        ("振り返り", f"from:@{SENDER_DOMAIN} 振り返り in:inbox")]:
+    for kind, query in [("起案", f"from:@{SENDER_DOMAIN} 起案 -from:me"),
+                        ("振り返り", f"from:@{SENDER_DOMAIN} 振り返り -from:me")]:
 
         # 振り返りは起案による行挿入後の最新状態が必要なため再読み込み
         if kind == "振り返り":
