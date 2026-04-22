@@ -121,6 +121,14 @@ def extract_dates(text):
     explicit = set()
     SEP = r'[〜~\-]'  # 範囲区切り文字（NFKC後: 〜 のみ全角、他は半角）
 
+    # ① YYYY-MM-DD 形式（openpyxl が date/datetime セルを str() 変換した結果）
+    # 例: "2026-04-11" or "2026-04-11 00:00:00"
+    for m in re.finditer(r'(20\d{2})-(\d{2})-(\d{2})', text):
+        try:
+            explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            pass
+
     # ① YYYYMMDD 単発
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
@@ -358,9 +366,13 @@ def verify(subject, att_text):
     print(f"    [件名]   store={s_store} dates={s_dates}")
     print(f"    [添付]   store={a_store} dates={a_dates}")
 
-    # 添付に情報がなければ件名を信頼
-    if not a_store and not a_dates:
-        return True, s_store, s_dates, ""
+    # 添付から日付が取れない場合は件名の日付を信頼する
+    # （添付が未対応フォーマット or 日付セルのみ → 誤検知を防ぐ）
+    if not a_dates:
+        # 店舗名が両方あって食い違う場合だけ不一致とする
+        if a_store and s_store and a_store != s_store:
+            return False, a_store, s_dates, f"店舗: 件名={s_store} / 添付={a_store}"
+        return True, a_store or s_store, s_dates, ""
 
     diffs = []
     if s_store and a_store and s_store != a_store:
