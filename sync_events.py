@@ -45,6 +45,16 @@ STORE_MAP = {
     "木の葉":   ["木の葉", "橋本"],
 }
 
+# 店舗の表示順（シートでの並び順）
+STORE_ORDER = ["竹ノ塚", "三軒茶屋", "日暮里", "町田", "木の葉", "立川", "経堂", "ゆめが丘"]
+
+def store_sort_key(store):
+    """店舗名を並び順のインデックスに変換（未知の店舗は末尾）"""
+    try:
+        return STORE_ORDER.index(store)
+    except ValueError:
+        return len(STORE_ORDER)
+
 # ===== 認証 =====
 def build_creds(prefix):
     creds = Credentials(
@@ -422,7 +432,7 @@ def load_sheet_rows(sheets_svc, sheet_name):
         try:
             d = datetime.strptime(date_str, "%Y/%m/%d").date()
             row_map[(store, d)] = i + 1
-            date_rows.append((d, i + 1))
+            date_rows.append((store_sort_key(store), d, i + 1))
         except ValueError:
             pass
     return row_map, sorted(date_rows)
@@ -464,10 +474,11 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
         print(f"    → スキップ(既存): {store} {d}")
         return date_rows, row_map
 
-    # 日付順の挿入位置を決定
+    # 店舗順・日付順の挿入位置を決定
+    new_key = (store_sort_key(store), d)
     insert_at = 4
-    for dt, row_num in date_rows:
-        if d < dt:
+    for sk, dt, row_num in date_rows:
+        if new_key < (sk, dt):
             insert_at = row_num
             break
         insert_at = row_num + 1
@@ -497,8 +508,8 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
     print(f"    → 行{insert_at}に挿入: {store} {d} 起案〇")
 
     # メモリ上で date_rows と row_map を更新（行挿入で以降の行番号が+1ずれる）
-    new_date_rows = [(dt, rn + 1) if rn >= insert_at else (dt, rn) for dt, rn in date_rows]
-    new_date_rows.append((d, insert_at))
+    new_date_rows = [(sk, dt, rn + 1) if rn >= insert_at else (sk, dt, rn) for sk, dt, rn in date_rows]
+    new_date_rows.append((store_sort_key(store), d, insert_at))
     new_row_map   = {(s, dt): (rn + 1 if rn >= insert_at else rn) for (s, dt), rn in row_map.items()}
     new_row_map[(store, d)] = insert_at
     return sorted(new_date_rows), new_row_map
