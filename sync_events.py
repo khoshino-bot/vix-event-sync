@@ -647,15 +647,18 @@ def categorize_kpi_row(j_val: str) -> dict:
     }
 
 def fill_kpi_columns(sheets_svc, event_sheet_name: str):
-    """星野テスト中の X〜AA列 を KPI 実績データ（ｸﾛｰｻﾞｰ行）で埋める"""
+    """
+    X〜AA列: イベント日と一致したｸﾛｰｻﾞｰ実績を各イベント行に書き込む。
+    AD〜AH列: イベント日と一致しなかった実績（戻り）を店舗ごとに集計して固定位置に書き込む。
+      行3=ヘッダー、行4〜11=STORE_ORDER順の店舗別戻り合計。
+    """
     print("\n=== KPI列入力開始 ===")
 
     # ① KPI 貼り付けシート全行取得
-    kpi_result = execute_with_retry(sheets_svc.spreadsheets().values().get(
+    kpi_rows = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=KPI_SPREADSHEET_ID,
         range=f"'{KPI_SHEET_NAME}'!A1:J10000"
-    ))
-    kpi_rows = kpi_result.get("values", [])
+    )).get("values", [])
     print(f"KPI総行数: {len(kpi_rows)}")
 
     # ② ｸﾛｰｻﾞｰ行を (date, kpi_store) キーで集計
@@ -677,14 +680,47 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
     print(f"ｸﾛｰｻﾞｰ集計: {len(kpi_counts)}キー")
 
     # ③ 星野テスト中シート読み込み（A1:AA200）
-    event_result = execute_with_retry(sheets_svc.spreadsheets().values().get(
+    event_rows = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{event_sheet_name}'!A1:AA200"
-    ))
-    event_rows = event_result.get("values", [])
+    )).get("values", [])
 
-    # ④ 更新データを収集して batchUpdate
+    # ④ イベント日キーを構築（kpi_store 形式: "楽天経堂" etc.）
+    event_kpi_keys: set = set()
+    for i, row in enumerate(event_rows):
+        if i < 3:
+            continue
+        store    = row[3].strip() if len(row) > 3 else ""
+        date_str = row[4].strip() if len(row) > 4 else ""
+        if not store or not date_str:
+            continue
+        try:
+            kpi_store = STORE_TO_KPI.get(store)
+            if kpi_store:
+                event_kpi_keys.add((datetime.strptime(date_str, "%Y/%m/%d").date(), kpi_store))
+        except ValueError:
+            pass
+
+    # ⑤ 戻り集計: イベント日以外のｸﾛｰｻﾞｰ実績を店舗ごとに合算（FILTER_YM適用）
+    kpi_to_store = {v: k for k, v in STORE_TO_KPI.items()}
+    kpi_return: dict = {}  # sheet_store → {mnp, hikari, turbo, card}
+    for (d, kpi_store), cats in kpi_counts.items():
+        if (d, kpi_store) in event_kpi_keys:
+            continue
+        if FILTER_YM and (d.year, d.month) != FILTER_YM:
+            continue
+        sheet_store = kpi_to_store.get(kpi_store)
+        if not sheet_store:
+            continue
+        if sheet_store not in kpi_return:
+            kpi_return[sheet_store] = {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0}
+        for k in cats:
+            kpi_return[sheet_store][k] += cats[k]
+    print(f"戻り集計: {len(kpi_return)}店舗")
+
     updates = []
+
+    # ⑥ X〜AA列: イベント行ごとのカウントを書き込む
     for i, row in enumerate(event_rows):
         if i < 3:
             continue
@@ -707,6 +743,20 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
         })
         print(f"  行{row_num}: {store} {event_date} → MNP={counts['mnp']}, 光={counts['hikari']}, Turbo={counts['turbo']}, カード={counts['card']}")
 
+    # ⑦ AD〜AH列: 戻りセクション（行3=ヘッダー、行4〜11=店舗別合計）
+    updates.append({
+        "range":  f"'{event_sheet_name}'!AD3:AH3",
+        "values": [["店舗", "新規MNP", "ひかり", "Turbo", "クレカ"]],
+    })
+    for idx, store in enumerate(STORE_ORDER):
+        row_num = 4 + idx
+        c = kpi_return.get(store, {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0})
+        updates.append({
+            "range":  f"'{event_sheet_name}'!AD{row_num}:AH{row_num}",
+            "values": [[store, c["mnp"], c["hikari"], c["turbo"], c["card"]]],
+        })
+        print(f"  [戻り] 行{row_num}: {store} → MNP={c['mnp']}, 光={c['hikari']}, Turbo={c['turbo']}, カード={c['card']}")
+
     if not updates:
         print("更新なし")
         return
@@ -715,7 +765,7 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
         spreadsheetId=SPREADSHEET_ID,
         body={"valueInputOption": "RAW", "data": updates}
     ))
-    print(f"=== KPI列入力完了: {len(updates)}行更新 ===")
+    print(f"=== KPI列入力完了: X〜AA {len(updates) - len(STORE_ORDER) - 1}行 / 戻り {len(STORE_ORDER)}店舗 ===")
 
 # ===== メイン =====
 def main():
