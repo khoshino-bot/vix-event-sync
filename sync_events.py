@@ -136,14 +136,14 @@ def extract_dates(text):
         except ValueError:
             pass
 
-    # ① YYYYMMDD.DD~DD.DD → 2つの同月範囲 (例: 20260408.11~14.18 → 4/8-11 と 4/14-18)
+    # ① YYYYMMDD.DD~DD.DD → 単発 + 範囲 + 単発 (例: 20260408.11~14.18 → 4/8単発, 4/11-14範囲, 4/18単発)
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})[.](\d{1,2})' + SEP + r'(\d{1,2})[.](\d{1,2})', text):
         yr, mo = int(m.group(1)), int(m.group(2))
         try:
-            for d in _expand_range(date(yr, mo, int(m.group(3))), date(yr, mo, int(m.group(4)))):
-                explicit.add(d)
-            for d in _expand_range(date(yr, mo, int(m.group(5))), date(yr, mo, int(m.group(6)))):
-                explicit.add(d)
+            explicit.add(date(yr, mo, int(m.group(3))))   # DD1: 単発
+            for d in _expand_range(date(yr, mo, int(m.group(4))), date(yr, mo, int(m.group(5)))):
+                explicit.add(d)                            # DD2〜DD3: 範囲
+            explicit.add(date(yr, mo, int(m.group(6))))   # DD4: 単発
         except ValueError:
             pass
 
