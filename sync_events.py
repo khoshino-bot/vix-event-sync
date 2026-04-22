@@ -48,6 +48,22 @@ STORE_MAP = {
 # 店舗の表示順（シートでの並び順）
 STORE_ORDER = ["竹ノ塚", "三軒茶屋", "日暮里", "町田", "木の葉", "立川", "経堂", "ゆめが丘"]
 
+# ===== KPI スプレッドシート設定 =====
+KPI_SPREADSHEET_ID = "1TLSOWLbrlckP_cx042IrofJHE48rjTNHZRFHCEvuQMY"
+KPI_SHEET_NAME     = "貼り付け"
+
+# 星野テスト中 D列 の店舗名 → KPI C列 の店舗名
+STORE_TO_KPI = {
+    "三軒茶屋": "楽天三茶",
+    "日暮里":   "楽天日暮里",
+    "町田":     "楽天町田",
+    "木の葉":   "楽天木の葉ﾓｰﾙ",
+    "立川":     "楽天立川",
+    "経堂":     "楽天経堂",
+    "ゆめが丘": "楽天ゆめが丘",
+    "竹ノ塚":   "楽天竹ノ塚",
+}
+
 def store_sort_key(store):
     """店舗名を並び順のインデックスに変換（未知の店舗は末尾）"""
     try:
@@ -608,6 +624,99 @@ def update_cell(sheets_svc, sheet_name, row_num, col):
     ))
     return True
 
+# ===== KPI列（X〜AA）自動入力 =====
+def parse_kpi_date(date_str: str):
+    """KPI B列の日付文字列を date に変換（"26/04/03" or "26/4/3"）"""
+    m = re.match(r'(\d{2})/(\d{1,2})/(\d{1,2})', (date_str or "").strip())
+    if not m:
+        return None
+    try:
+        return date(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+def categorize_kpi_row(j_val: str) -> dict:
+    """J列の商品名をカテゴリに分類して {mnp, hikari, turbo, card} を返す"""
+    j = (j_val or "").strip()
+    return {
+        "mnp":    1 if ("MNP" in j or "新規/ﾏｲｸﾞﾚ" in j) else 0,
+        "hikari": 1 if "光" in j else 0,
+        "turbo":  1 if "楽天Turbo" in j else 0,
+        "card":   1 if (("楽天ｶｰﾄﾞ" in j or "楽天ｺﾞｰﾙﾄﾞｶｰﾄﾞ" in j)
+                         and "審査待ち" not in j and "落ち" not in j) else 0,
+    }
+
+def fill_kpi_columns(sheets_svc, event_sheet_name: str):
+    """星野テスト中の X〜AA列 を KPI 実績データ（ｸﾛｰｻﾞｰ行）で埋める"""
+    print("\n=== KPI列入力開始 ===")
+
+    # ① KPI 貼り付けシート全行取得
+    kpi_result = execute_with_retry(sheets_svc.spreadsheets().values().get(
+        spreadsheetId=KPI_SPREADSHEET_ID,
+        range=f"'{KPI_SHEET_NAME}'!A1:J10000"
+    ))
+    kpi_rows = kpi_result.get("values", [])
+    print(f"KPI総行数: {len(kpi_rows)}")
+
+    # ② ｸﾛｰｻﾞｰ行を (date, kpi_store) キーで集計
+    kpi_counts: dict = {}
+    for row in kpi_rows:
+        d_role = row[3].strip() if len(row) > 3 else ""
+        if d_role != "ｸﾛｰｻﾞｰ":
+            continue
+        d = parse_kpi_date(row[1] if len(row) > 1 else "")
+        if not d:
+            continue
+        c_store = row[2].strip() if len(row) > 2 else ""
+        key = (d, c_store)
+        if key not in kpi_counts:
+            kpi_counts[key] = {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0}
+        cats = categorize_kpi_row(row[9] if len(row) > 9 else "")
+        for k in cats:
+            kpi_counts[key][k] += cats[k]
+    print(f"ｸﾛｰｻﾞｰ集計: {len(kpi_counts)}キー")
+
+    # ③ 星野テスト中シート読み込み（A1:AA200）
+    event_result = execute_with_retry(sheets_svc.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{event_sheet_name}'!A1:AA200"
+    ))
+    event_rows = event_result.get("values", [])
+
+    # ④ 更新データを収集して batchUpdate
+    updates = []
+    for i, row in enumerate(event_rows):
+        if i < 3:
+            continue
+        store    = row[3].strip() if len(row) > 3 else ""
+        date_str = row[4].strip() if len(row) > 4 else ""
+        if not store or not date_str:
+            continue
+        try:
+            event_date = datetime.strptime(date_str, "%Y/%m/%d").date()
+        except ValueError:
+            continue
+        kpi_store = STORE_TO_KPI.get(store)
+        if not kpi_store:
+            continue
+        counts = kpi_counts.get((event_date, kpi_store), {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0})
+        row_num = i + 1
+        updates.append({
+            "range":  f"'{event_sheet_name}'!X{row_num}:AA{row_num}",
+            "values": [[counts["mnp"], counts["hikari"], counts["turbo"], counts["card"]]],
+        })
+        print(f"  行{row_num}: {store} {event_date} → MNP={counts['mnp']}, 光={counts['hikari']}, Turbo={counts['turbo']}, カード={counts['card']}")
+
+    if not updates:
+        print("更新なし")
+        return
+
+    execute_with_retry(sheets_svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"valueInputOption": "RAW", "data": updates}
+    ))
+    print(f"=== KPI列入力完了: {len(updates)}行更新 ===")
+
 # ===== メイン =====
 def main():
     print(f"=== 同期開始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
@@ -728,6 +837,9 @@ def main():
 
     save_processed(processed)
     print(f"\n=== 完了: {updated}件更新 ===")
+
+    # KPI列（X〜AA）を更新
+    fill_kpi_columns(sheets_svc, sheet_name)
 
 if __name__ == "__main__":
     main()
