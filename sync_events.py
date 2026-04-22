@@ -139,12 +139,13 @@ def extract_dates(text):
         except ValueError:
             pass
 
-    # ① YYYYMMDD.DD → 同月範囲 (例: 20260404.25 → 4/4〜4/25)
+    # ① YYYYMMDD.DD → 同月の2つの個別日付 (例: 20260404.25 → 4/4 と 4/25)
+    # ※ 範囲ではなく「日付1.日付2」という列挙形式
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})[.](\d{1,2})', text):
         yr, mo, d1, d2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
         try:
-            for d in _expand_range(date(yr, mo, d1), date(yr, mo, d2)):
-                explicit.add(d)
+            explicit.add(date(yr, mo, d1))
+            explicit.add(date(yr, mo, d2))
         except ValueError:
             pass
 
@@ -486,17 +487,46 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
     # 例行より後 → 上から継承、例行以前 → 下（例行）から継承
     inherit_from_before = (insert_at > first_formatted_row)
 
+    # 行挿入後のテンプレート行（0-indexed）:
+    #   inheritFromBefore=True  → 上の行 (insert_at-2)  ← 挿入で位置変わらず
+    #   inheritFromBefore=False → 下の例行 (insert_at)  ← 挿入で+1シフト済み
+    template_row_0 = (insert_at - 2) if inherit_from_before else insert_at
+    new_row_0      = insert_at - 1
+
+    # M:T列(12-19) と V:W列(21-22) の数式を明示的にコピー（数式のセル参照を新行に合わせて調整）
+    formula_ranges = [(12, 20), (21, 23)]  # (startColumnIndex, endColumnIndex) 0-indexed
+    copy_requests = [
+        {"copyPaste": {
+            "source": {
+                "sheetId": sheet_id,
+                "startRowIndex": template_row_0, "endRowIndex": template_row_0 + 1,
+                "startColumnIndex": c_start,     "endColumnIndex": c_end,
+            },
+            "destination": {
+                "sheetId": sheet_id,
+                "startRowIndex": new_row_0,      "endRowIndex": new_row_0 + 1,
+                "startColumnIndex": c_start,     "endColumnIndex": c_end,
+            },
+            "pasteType": "PASTE_FORMULA",
+            "pasteOrientation": "NORMAL",
+        }}
+        for c_start, c_end in formula_ranges
+    ]
+
     execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
-        body={"requests": [{"insertDimension": {
-            "range": {
-                "sheetId":    sheet_id,
-                "dimension":  "ROWS",
-                "startIndex": insert_at - 1,
-                "endIndex":   insert_at,
-            },
-            "inheritFromBefore": inherit_from_before
-        }}]}
+        body={"requests": [
+            {"insertDimension": {
+                "range": {
+                    "sheetId":    sheet_id,
+                    "dimension":  "ROWS",
+                    "startIndex": insert_at - 1,
+                    "endIndex":   insert_at,
+                },
+                "inheritFromBefore": inherit_from_before
+            }},
+            *copy_requests,
+        ]}
     ))
 
     execute_with_retry(sheets_svc.spreadsheets().values().update(
