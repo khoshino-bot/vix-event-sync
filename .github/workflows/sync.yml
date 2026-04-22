@@ -2,7 +2,7 @@ name: イベント起案・振り返り自動同期
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */2 * * *"
   workflow_dispatch:
 
 jobs:
