@@ -634,10 +634,18 @@ def main():
         if kind == "振り返り":
             row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
 
-        result = gmail_svc.users().messages().list(
-            userId="me", q=query, maxResults=50
-        ).execute()
-        messages = result.get("messages", [])
+        # ページネーションで全件取得（maxResults=50 の打ち切りを防ぐ）
+        messages = []
+        page_token = None
+        while True:
+            kwargs = dict(userId="me", q=query, maxResults=500)
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = gmail_svc.users().messages().list(**kwargs).execute()
+            messages.extend(result.get("messages", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
         print(f"\nGmail '{query}': {len(messages)}件")
 
         for m in messages:
