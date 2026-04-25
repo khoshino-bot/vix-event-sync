@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
+    inputs:
+      reset_processed:
+        description: '処理済みキャッシュをリセット（全メールを再処理）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   sync:
@@ -39,5 +48,5 @@ jobs:
           KPI_SPREADSHEET_ID:   ${{ secrets.KPI_SPREADSHEET_ID }}
           SENDER_DOMAIN:        "vix.co.jp"
           # TARGET_SHEET, FILTER_YYYYMM は当月を自動検出（毎月変更不要）
-          # RESET_PROCESSED は未設定=false（処理済みキャッシュを正常利用）
+          RESET_PROCESSED:      ${{ github.event.inputs.reset_processed || 'false' }}
         run: python sync_events.py
