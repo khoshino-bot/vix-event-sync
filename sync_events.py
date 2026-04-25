@@ -527,9 +527,50 @@ def execute_with_retry(request, max_retries=6, pace_sec=1.1):
                 raise
 
 def get_sheet_id(sheets_svc, sheet_name):
-    meta = sheets_svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    meta = execute_with_retry(sheets_svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID))
     return next(s["properties"]["sheetId"] for s in meta["sheets"]
                 if s["properties"]["title"] == sheet_name)
+
+def ensure_current_sheet(sheets_svc, sheet_name: str) -> int:
+    """
+    当月シートが存在しない場合はテンプレートシートを複製して作成する。
+    既に存在する場合はそのまま sheetId を返す（冪等）。
+    """
+    meta   = execute_with_retry(sheets_svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID))
+    sheets = meta["sheets"]
+    titles = {s["properties"]["title"]: s for s in sheets}
+
+    if sheet_name in titles:
+        return titles[sheet_name]["properties"]["sheetId"]
+
+    # シートが存在しない → テンプレートから自動作成
+    tpl_name = os.environ.get("TEMPLATE_SHEET_NAME", "テンプレート")
+    if tpl_name not in titles:
+        raise SystemExit(
+            f"[ERROR] シート '{sheet_name}' が存在せず、"
+            f"テンプレートシート '{tpl_name}' も見つかりません。\n"
+            f"スプレッドシート内に '{tpl_name}' シートを作成してください。"
+        )
+
+    print(f"シート '{sheet_name}' が存在しないため '{tpl_name}' から作成します...")
+    yymm_sheets = sorted(
+        [s for s in sheets
+         if len(s["properties"]["title"]) == 4 and s["properties"]["title"].isdigit()],
+        key=lambda s: s["properties"]["title"]
+    )
+    insert_index = (yymm_sheets[-1]["properties"]["index"] + 1) if yymm_sheets else 1
+
+    res = execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": [{"duplicateSheet": {
+            "sourceSheetId":    titles[tpl_name]["properties"]["sheetId"],
+            "insertSheetIndex": insert_index,
+            "newSheetName":     sheet_name,
+        }}]}
+    ))
+    new_id = res["replies"][0]["duplicateSheet"]["properties"]["sheetId"]
+    print(f"シート '{sheet_name}' を作成しました (sheetId={new_id})")
+    return new_id
 
 def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet_id,
                      first_formatted_row=4):
@@ -793,17 +834,15 @@ def main():
     sheet_name = get_current_sheet_name()
     print(f"対象シート: {sheet_name}")
 
-    try:
-        sheet_id = get_sheet_id(sheets_svc, sheet_name)
-        # 重複行クリーンアップ（過去の実行で残ったデータを除去）
-        deduplicate_sheet(sheets_svc, sheet_name, sheet_id)
-        row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
-        # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
-        first_formatted_row = min(row_map.values()) if row_map else 4
-        print(f"既存行数: {len(row_map)}  書式基準行: {first_formatted_row}")
-    except Exception as e:
-        print(f"[ERROR] シート '{sheet_name}' を読めません: {e}")
-        return
+    # シートが存在しなければテンプレートから自動作成（月初の create_monthly_sheet.yml が
+    # 失敗した場合の自己修復フォールバック）
+    sheet_id = ensure_current_sheet(sheets_svc, sheet_name)
+    # 重複行クリーンアップ（過去の実行で残ったデータを除去）
+    deduplicate_sheet(sheets_svc, sheet_name, sheet_id)
+    row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
+    # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
+    first_formatted_row = min(row_map.values()) if row_map else 4
+    print(f"既存行数: {len(row_map)}  書式基準行: {first_formatted_row}")
 
     updated = 0
 

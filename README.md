@@ -120,6 +120,36 @@ python3 reauth.py
 
 ---
 
+## 月次シートの自動作成
+
+毎月1日 09:00（JST）に GitHub Actions が「テンプレート」シートを複製して
+当月の YYMM シート（例: `2605`）を自動作成します。
+
+### テンプレートシートの準備（初回1回だけ）
+
+スプレッドシート内に **`テンプレート`** という名前のシートを作成する。
+
+中身は既存の月シートと同じ構造にする：
+
+| 行 | 内容 |
+|----|------|
+| 1〜3 | ヘッダー行（列名など） |
+| 4 | 書式・ドロップダウン・数式が設定された空行（データなし） |
+
+> テンプレートのデータ行（行4）には実際の値を入れず、書式だけ設定した状態にしておく。  
+> sync_events.py が起案メールを検知するたびに、このテンプレート行の書式を引き継いで新しい行を挿入する。
+
+### 手動でシートを作りたい場合
+
+```bash
+SHEETS_CLIENT_ID=xxx SHEETS_CLIENT_SECRET=xxx SHEETS_REFRESH_TOKEN=xxx \
+SPREADSHEET_ID=xxx python3 create_monthly_sheet.py
+```
+
+または GitHub Actions の Actions タブ → `月次シート自動作成` → `Run workflow` で手動実行。
+
+---
+
 ## 店舗を追加するには
 
 `sync_events.py` を編集して2箇所追記し、push する。

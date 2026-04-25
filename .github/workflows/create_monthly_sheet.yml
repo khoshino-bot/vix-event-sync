@@ -1,0 +1,30 @@
+name: 月次シート自動作成
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # 毎月1日 0:00 UTC = JST 09:00
+  workflow_dispatch:
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 依存ライブラリをインストール
+        run: pip install google-auth google-auth-httplib2 google-api-python-client
+
+      - name: 当月シートを作成
+        env:
+          SHEETS_CLIENT_ID:     ${{ secrets.SHEETS_CLIENT_ID }}
+          SHEETS_CLIENT_SECRET: ${{ secrets.SHEETS_CLIENT_SECRET }}
+          SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
+          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          TEMPLATE_SHEET_NAME:  "テンプレート"
+        run: python create_monthly_sheet.py
