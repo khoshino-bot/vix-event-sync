@@ -36,8 +36,8 @@ jobs:
           SHEETS_CLIENT_SECRET: ${{ secrets.SHEETS_CLIENT_SECRET }}
           SHEETS_REFRESH_TOKEN: ${{ secrets.SHEETS_REFRESH_TOKEN }}
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          KPI_SPREADSHEET_ID:   ${{ secrets.KPI_SPREADSHEET_ID }}
           SENDER_DOMAIN:        "vix.co.jp"
-          TARGET_SHEET:         "星野テスト中"
-          FILTER_YYYYMM:        "202604"
-          RESET_PROCESSED:      "true"
+          # TARGET_SHEET, FILTER_YYYYMM は当月を自動検出（毎月変更不要）
+          # RESET_PROCESSED は未設定=false（処理済みキャッシュを正常利用）
         run: python sync_events.py

@@ -30,9 +30,13 @@ SENDER_DOMAIN  = os.environ.get("SENDER_DOMAIN", "vix.co.jp")
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "false").lower() == "true"
 # RESET_PROCESSED=true で処理済みキャッシュを無視（シート再投入時に使用）
 RESET_PROCESSED = os.environ.get("RESET_PROCESSED", "false").lower() == "true"
-# FILTER_YYYYMM=202604 で対象年月を絞る（例: 202604 → 2026年4月分のみ）
+# FILTER_YYYYMM=202604 で対象年月を指定。未設定時は当月を自動検出。
 _fym = os.environ.get("FILTER_YYYYMM", "").strip()
-FILTER_YM = (int(_fym[:4]), int(_fym[4:])) if len(_fym) == 6 else None
+if len(_fym) == 6:
+    FILTER_YM = (int(_fym[:4]), int(_fym[4:]))
+else:
+    _now = datetime.now()
+    FILTER_YM = (_now.year, _now.month)
 
 STORE_MAP = {
     "経堂":     ["経堂"],
@@ -49,10 +53,10 @@ STORE_MAP = {
 STORE_ORDER = ["竹ノ塚", "三軒茶屋", "日暮里", "町田", "木の葉", "立川", "経堂", "ゆめが丘"]
 
 # ===== KPI スプレッドシート設定 =====
-KPI_SPREADSHEET_ID = "1TLSOWLbrlckP_cx042IrofJHE48rjTNHZRFHCEvuQMY"
-KPI_SHEET_NAME     = "貼り付け"
+KPI_SPREADSHEET_ID = os.environ.get("KPI_SPREADSHEET_ID", "")
+KPI_SHEET_NAME     = os.environ.get("KPI_SHEET_NAME", "貼り付け")
 
-# 星野テスト中 D列 の店舗名 → KPI C列 の店舗名
+# シートのD列（店舗名）→ KPI C列（楽天店舗名）のマッピング
 STORE_TO_KPI = {
     "三軒茶屋": "楽天三茶",
     "日暮里":   "楽天日暮里",
@@ -770,6 +774,11 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
 # ===== メイン =====
 def main():
     print(f"=== 同期開始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+
+    # 必須環境変数チェック
+    for _var in ("SPREADSHEET_ID", "KPI_SPREADSHEET_ID"):
+        if not os.environ.get(_var):
+            raise SystemExit(f"[ERROR] 環境変数 {_var} が設定されていません")
 
     gmail_creds  = build_creds("GMAIL")
     sheets_creds = build_creds("SHEETS")
