@@ -768,7 +768,7 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
         spreadsheetId=SPREADSHEET_ID,
         body={"ranges": [
             f"'{event_sheet_name}'!X4:AA200",          # 単日実績（イベント行）
-            f"'{event_sheet_name}'!AD1:AH{3 + len(STORE_ORDER) + 2}",  # 戻りセクション全体
+            f"'{event_sheet_name}'!AD1:AH{4 + len(STORE_ORDER) + 2}",  # 戻りセクション全体
         ]}
     ))
 
@@ -800,20 +800,20 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
         print(f"  行{row_num}: {store} {event_date} → MNP={counts['mnp']}, 光={counts['hikari']}, Turbo={counts['turbo']}, カード={counts['card']}")
 
     # ⑦ AD〜AH列: 戻りセクション
-    #   行1: セクションタイトル
-    #   行2: 列ヘッダー
-    #   行3〜: 店舗別合計（STORE_ORDER順）
+    #   行1〜2: セクションタイトル（左側の単日実績タイトル行に合わせる）
+    #   行3:    列ヘッダー（左側の黄色ヘッダー行に合わせる）
+    #   行4〜:  店舗別合計（左側のデータ行に合わせる）
     ym_label = f"{FILTER_YM[0]}年{FILTER_YM[1]}月" if FILTER_YM else "当月"
     updates.append({
         "range":  f"'{event_sheet_name}'!AD1:AH1",
         "values": [[f"戻り（{ym_label} イベント日以外のクローザー獲得）", "", "", "", ""]],
     })
     updates.append({
-        "range":  f"'{event_sheet_name}'!AD2:AH2",
+        "range":  f"'{event_sheet_name}'!AD3:AH3",
         "values": [["店舗", "新規MNP", "ひかり", "Turbo", "クレカ"]],
     })
     for idx, store in enumerate(STORE_ORDER):
-        row_num = 3 + idx
+        row_num = 4 + idx
         c = kpi_return.get(store, {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0})
         updates.append({
             "range":  f"'{event_sheet_name}'!AD{row_num}:AH{row_num}",
