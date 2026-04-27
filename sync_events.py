@@ -429,6 +429,7 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
 {diff_msg}
 
 問題なければそのままで大丈夫です。修正が必要な場合は再送をお願いします。
+再送する場合は件名の前に「再送」をつけてください。
 
 ---
 このメールは自動送信です。
