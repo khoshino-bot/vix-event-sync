@@ -924,8 +924,8 @@ def main():
                     send_discrepancy_email(gmail_svc, msg, subject, diff)
                 else:
                     print("    → 通知メール送信: スキップ（NOTIFY_EMAIL=false）")
-                processed.add(m["id"])
-                continue
+                # 不一致でもシートへの入力は続行（内容が正しく再送不要なケースに対応）
+                # store・dates は verify() が添付優先で返した値を使う
 
             if not store or not dates:
                 print("    [WARN] 店舗または日付を特定できません")
