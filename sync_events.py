@@ -422,11 +422,13 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
     _, addr = email_utils.parseaddr(raw_from)
     to   = addr if addr else raw_from
     subj = "Re: " + headers.get("Subject", "")
-    body = f"""件名と添付ファイルの内容に相違が見つかりました。
-確認・修正の上、再送してください。
+    body = f"""お疲れ様です。
+イベント申請の件名と添付ファイルの内容が合っていないようです。確認していただけますか？
 
-【相違点】
+【気になった箇所】
 {diff_msg}
+
+問題なければそのままで大丈夫です。修正が必要な場合は再送をお願いします。
 
 ---
 このメールは自動送信です。
