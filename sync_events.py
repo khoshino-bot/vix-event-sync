@@ -26,8 +26,10 @@ import openpyxl
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1ia4DThYgqZ3WdyeoQcBpKj5c_t8bJdYgFZIY7Ge2ubE")
 PROCESSED_FILE = "processed_ids.json"
 SENDER_DOMAIN  = os.environ.get("SENDER_DOMAIN", "vix.co.jp")
-# NOTIFY_EMAIL=true を GitHub Secrets にセットすると相違通知メールを送信する
-NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "false").lower() == "true"
+# 相違通知メールの送信（デフォルト有効）
+NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "true").lower() == "true"
+# 相違通知メールの CC 先（管理者）
+OWNER_EMAIL    = os.environ.get("OWNER_EMAIL", "k.hoshino@vix.co.jp")
 # RESET_PROCESSED=true で処理済みキャッシュを無視（シート再投入時に使用）
 RESET_PROCESSED = os.environ.get("RESET_PROCESSED", "false").lower() == "true"
 # FILTER_YYYYMM=202604 で対象年月を指定。未設定時は当月を自動検出。
@@ -420,7 +422,7 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
     _, addr = email_utils.parseaddr(raw_from)
     to   = addr if addr else raw_from
     subj = "Re: " + headers.get("Subject", "")
-    body    = f"""件名と添付ファイルの内容に相違が見つかりました。
+    body = f"""件名と添付ファイルの内容に相違が見つかりました。
 確認・修正の上、再送してください。
 
 【相違点】
@@ -432,11 +434,15 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
     msg_obj = MIMEText(body, "plain", "utf-8")
     msg_obj["To"]      = to
     msg_obj["Subject"] = subj
+    # 管理者（OWNER_EMAIL）を CC に追加
+    if OWNER_EMAIL and OWNER_EMAIL != to:
+        msg_obj["Cc"] = OWNER_EMAIL
     encoded = base64.urlsafe_b64encode(msg_obj.as_bytes()).decode()
     gmail_svc.users().messages().send(
         userId="me", body={"raw": encoded}
     ).execute()
-    print(f"    → 通知メール送信: {to}")
+    cc_info = f" / CC: {OWNER_EMAIL}" if OWNER_EMAIL and OWNER_EMAIL != to else ""
+    print(f"    → 通知メール送信: {to}{cc_info}")
 
 # ===== シート操作 =====
 def get_current_sheet_name():
