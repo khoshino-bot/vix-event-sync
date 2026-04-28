@@ -447,6 +447,36 @@ def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
     cc_info = f" / CC: {OWNER_EMAIL}" if OWNER_EMAIL and OWNER_EMAIL != to else ""
     print(f"    → 通知メール送信: {to}{cc_info}")
 
+def send_missing_proposal_email(gmail_svc, original_msg, store, dates):
+    """振り返りメールが届いたが対応する起案行がない場合に送信者へ通知する"""
+    headers = {h["name"]: h["value"] for h in original_msg["payload"]["headers"]}
+    _, addr = email_utils.parseaddr(headers.get("From", ""))
+    to   = addr if addr else headers.get("From", "")
+    subj = "Re: " + headers.get("Subject", "")
+    date_str = "、".join(str(d) for d in sorted(dates))
+    body = f"""お疲れ様です。
+振り返り報告を受け取りましたが、対応するイベント起案が見つかりませんでした。
+
+【対象】
+店舗: {store}
+日付: {date_str}
+
+起案メールをまだ送っていない場合は送ってください。
+既に送っている場合は件名や日付の書き方を確認していただけますか？
+
+---
+このメールは自動送信です。
+"""
+    msg_obj = MIMEText(body, "plain", "utf-8")
+    msg_obj["To"]      = to
+    msg_obj["Subject"] = subj
+    if OWNER_EMAIL and OWNER_EMAIL != to:
+        msg_obj["Cc"] = OWNER_EMAIL
+    encoded = base64.urlsafe_b64encode(msg_obj.as_bytes()).decode()
+    gmail_svc.users().messages().send(userId="me", body={"raw": encoded}).execute()
+    cc_info = f" / CC: {OWNER_EMAIL}" if OWNER_EMAIL and OWNER_EMAIL != to else ""
+    print(f"    → 起案なし通知メール送信: {to}{cc_info}")
+
 # ===== シート操作 =====
 def get_current_sheet_name():
     # TARGET_SHEET 環境変数が設定されていればそれを優先
@@ -996,7 +1026,12 @@ def main():
                             updated += 1
                         matched = True
                 if not matched:
-                    print(f"    [行なし] {store} {dates} → 次回再試行")
+                    print(f"    [行なし] {store} {dates} → 起案なし通知を送信")
+                    if NOTIFY_EMAIL:
+                        send_missing_proposal_email(gmail_svc, msg, store, dates)
+                    else:
+                        print("    → 通知メール送信: スキップ（NOTIFY_EMAIL=false）")
+                    processed.add(m["id"])
                     continue
 
             processed.add(m["id"])
