@@ -480,7 +480,7 @@ def load_sheet_rows(sheets_svc, sheet_name):
     return row_map, sorted(date_rows)
 
 def deduplicate_sheet(sheets_svc, sheet_name, sheet_id):
-    """シート内の重複（店舗・日付）行を検出して削除する（後ろの行を優先して削除）"""
+    """シート内の重複（店舗・日付）行を検出して削除する（先に出た行を削除＝再送の上書きを優先）"""
     result = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{sheet_name}'!A1:Z300"
@@ -497,12 +497,13 @@ def deduplicate_sheet(sheets_svc, sheet_name, sheet_id):
             continue
         key = (store, date_str)
         if key in seen:
-            to_delete.append(i + 1)   # 後で出てきた方を削除
+            to_delete.append(seen[key])  # 先に出た方（古い行）を削除
+            seen[key] = i + 1            # 最新行番号に更新
         else:
             seen[key] = i + 1
     if not to_delete:
         return
-    print(f"★ 重複行を削除: {len(to_delete)}行 {to_delete}")
+    print(f"★ 重複行を削除: {len(to_delete)}行 {sorted(to_delete)}")
     # 後ろから削除して行番号ずれを防ぐ
     for row_num in sorted(to_delete, reverse=True):
         execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
@@ -516,6 +517,35 @@ def deduplicate_sheet(sheets_svc, sheet_name, sheet_id):
                 }
             }}]}
         ))
+
+
+def delete_rows_by_dates(sheets_svc, sheet_name, sheet_id, target_dates, row_map):
+    """
+    再送メール処理用: 指定日付に一致する既存行をすべて削除する。
+    同じ日付であれば店舗名が変わっていても古い行を除去できる。
+    Returns: 削除があった場合 True
+    """
+    target_set = set(target_dates)
+    rows_to_delete = sorted(
+        [row_num for (_, d), row_num in row_map.items() if d in target_set],
+        reverse=True,
+    )
+    if not rows_to_delete:
+        return False
+    print(f"    [再送] 既存行を削除: {len(rows_to_delete)}行 {rows_to_delete}")
+    for row_num in rows_to_delete:
+        execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={"requests": [{"deleteDimension": {
+                "range": {
+                    "sheetId":    sheet_id,
+                    "dimension":  "ROWS",
+                    "startIndex": row_num - 1,
+                    "endIndex":   row_num,
+                }
+            }}]}
+        ))
+    return True
 
 def execute_with_retry(request, max_retries=6, pace_sec=1.1):
     """
@@ -933,6 +963,16 @@ def main():
                 continue
 
             if kind == "起案":
+                # 「再送」で始まる件名は古い行を削除してから挿入（店舗・日付が修正された場合も対応）
+                is_resend = bool(re.match(r'^(再送\s*)+', subject.strip()))
+                if is_resend:
+                    target_dates = [d for d in dates
+                                    if not FILTER_YM or (d.year, d.month) == FILTER_YM]
+                    if delete_rows_by_dates(sheets_svc, sheet_name, sheet_id,
+                                            target_dates, row_map):
+                        # 行番号が変わっているので再読み込み
+                        row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
+
                 for d in dates:
                     # 対象年月フィルタ
                     if FILTER_YM and (d.year, d.month) != FILTER_YM:
