@@ -664,13 +664,11 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
             break
         insert_at = row_num + 1
 
-    # 例行より後 → 上から継承、例行以前 → 下（例行）から継承
+    # 書式・数式のコピー元は常にテンプレート行（行4 = 0-indexed: 3）を使う。
+    # 直前の行からコピーすると、その行がプログラム挿入行の場合に
+    # シート参照（祝日リスト等）が壊れて #REF! になるため。
     inherit_from_before = (insert_at > first_formatted_row)
-
-    # 行挿入後のテンプレート行（0-indexed）:
-    #   inheritFromBefore=True  → 上の行 (insert_at-2)  ← 挿入で位置変わらず
-    #   inheritFromBefore=False → 下の例行 (insert_at)  ← 挿入で+1シフト済み
-    template_row_0 = (insert_at - 2) if inherit_from_before else insert_at
+    template_row_0 = first_formatted_row - 1  # 常に固定テンプレート行（0-indexed）
     new_row_0      = insert_at - 1
 
     # M:T列(12-19) と V:W列(21-22) の数式を明示的にコピー（数式のセル参照を新行に合わせて調整）
