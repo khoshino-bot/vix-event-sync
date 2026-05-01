@@ -401,18 +401,19 @@ def verify(subject, att_text):
         diffs.append(f"店舗: 件名={s_store} / 添付={a_store}")
 
     s_set, a_set = set(s_dates), set(a_dates)
+    # 「件名の日付が添付に含まれているか」だけ確認する。
+    # 添付には月間スケジュール等で余分な日付が含まれる場合があるため
+    # 「添付のみの日付」は不一致とみなさない。
     only_subject = sorted(s_set - a_set)
-    only_attach  = sorted(a_set - s_set)
     if only_subject:
-        diffs.append(f"件名のみの日付: {only_subject}")
-    if only_attach:
-        diffs.append(f"添付のみの日付: {only_attach}")
+        diffs.append(f"件名の日付が添付に見つかりません: {only_subject}")
 
     if diffs:
-        return False, a_store or s_store, sorted(a_set | s_set), "\n".join(diffs)
+        # 返却する dates は件名の日付を優先（添付の余分な日付は除外）
+        return False, a_store or s_store, sorted(s_set), "\n".join(diffs)
 
-    # 一致 → 添付の情報を正とする
-    return True, a_store or s_store, sorted(a_set | s_set), ""
+    # 一致 → 件名の日付を採用（添付の余分な日付は含めない）
+    return True, a_store or s_store, sorted(s_set), ""
 
 # ===== 通知メール =====
 def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
