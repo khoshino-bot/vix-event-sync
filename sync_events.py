@@ -810,7 +810,33 @@ def categorize_kpi_row(j_val: str) -> dict:
                          and "審査待ち" not in j and "落ち" not in j) else 0,
     }
 
-def fill_kpi_columns(sheets_svc, event_sheet_name: str):
+def find_kpi_spreadsheet_id(yymm: str, creds) -> str:
+    """
+    Google Drive で「楽天評価制度{YYMM}」を名前検索してスプレッドシートIDを返す。
+    Drive API スコープがない場合や見つからない場合は KPI_SPREADSHEET_ID 環境変数にフォールバック。
+    """
+    fallback = os.environ.get("KPI_SPREADSHEET_ID", KPI_SPREADSHEET_ID)
+    target_name = f"楽天評価制度{yymm}"
+    try:
+        drive_svc = build("drive", "v3", credentials=creds)
+        results = drive_svc.files().list(
+            q=f"name='{target_name}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+            fields="files(id, name)",
+            pageSize=5,
+        ).execute()
+        files = results.get("files", [])
+        if files:
+            found_id = files[0]["id"]
+            print(f"KPIスプレッドシートを自動検出: {target_name} ({found_id})")
+            return found_id
+        print(f"[WARN] '{target_name}' が Drive に見つかりません。フォールバック: {fallback}")
+    except Exception as e:
+        print(f"[WARN] Drive検索失敗（スコープ未付与の可能性）: {e}")
+        print(f"  → フォールバック: {fallback}")
+    return fallback
+
+
+def fill_kpi_columns(sheets_svc, event_sheet_name: str, kpi_id: str):
     """
     X〜AA列: イベント日・店舗に一致する実績（MNP/ひかり/Turbo/クレカ）を各イベント行に書き込む。
     AD〜AH列: イベント日以外の獲得数（戻り）を店舗ごとに集計して固定位置に書き込む。
@@ -823,7 +849,7 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
     # 列構造: A=注文ID, B=日付(YY/MM/DD), C=店舗, D=スタッフ名,
     #         E=種別, F=支払, G/H=空, I=コード, J=商品名, K=数量(負=キャンセル)
     kpi_rows = execute_with_retry(sheets_svc.spreadsheets().values().get(
-        spreadsheetId=KPI_SPREADSHEET_ID,
+        spreadsheetId=kpi_id,
         range=f"'{KPI_SHEET_NAME}'!A1:K10000"
     )).get("values", [])
     print(f"KPI総行数: {len(kpi_rows)}")
@@ -963,10 +989,9 @@ def fill_kpi_columns(sheets_svc, event_sheet_name: str):
 def main():
     print(f"=== 同期開始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-    # 必須環境変数チェック
-    for _var in ("SPREADSHEET_ID", "KPI_SPREADSHEET_ID"):
-        if not os.environ.get(_var):
-            raise SystemExit(f"[ERROR] 環境変数 {_var} が設定されていません")
+    # 必須環境変数チェック（KPI_SPREADSHEET_IDはDrive自動検索でフォールバックできるため任意）
+    if not os.environ.get("SPREADSHEET_ID"):
+        raise SystemExit("[ERROR] 環境変数 SPREADSHEET_ID が設定されていません")
 
     gmail_creds  = build_creds("GMAIL")
     sheets_creds = build_creds("SHEETS")
@@ -980,6 +1005,11 @@ def main():
         print(f"★ FILTER_YYYYMM: {FILTER_YM[0]}年{FILTER_YM[1]}月分のみ対象")
     sheet_name = get_current_sheet_name()
     print(f"対象シート: {sheet_name}")
+
+    # KPIスプレッドシートをDriveで自動検索（例: 楽天評価制度2606）
+    yymm = f"{str(FILTER_YM[0])[2:]}{str(FILTER_YM[1]).zfill(2)}"
+    kpi_id = find_kpi_spreadsheet_id(yymm, sheets_creds)
+    print(f"KPIスプレッドシートID: {kpi_id}")
 
     # シートが存在しなければテンプレートから自動作成（月初の create_monthly_sheet.yml が
     # 失敗した場合の自己修復フォールバック）
@@ -1111,7 +1141,7 @@ def main():
     print(f"\n=== 完了: {updated}件更新 ===")
 
     # KPI列（X〜AA）を更新
-    fill_kpi_columns(sheets_svc, sheet_name)
+    fill_kpi_columns(sheets_svc, sheet_name, kpi_id)
 
 if __name__ == "__main__":
     main()
