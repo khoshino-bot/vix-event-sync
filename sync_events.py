@@ -159,6 +159,17 @@ def extract_dates(text):
         except ValueError:
             pass
 
+    # ① YYYYMMDD-DD(_DD-DD)* 形式（件名の省略形 例: 20260507-08_14-15_19-20）
+    # YYYYMMDD の後に「-DD」や「_DD」が続く場合はすべて同月の日付として展開する
+    for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})((?:[_-]\d{2})+)', text):
+        yr, mo, d1 = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            explicit.add(date(yr, mo, d1))
+            for day_str in re.findall(r'[_-](\d{2})', m.group(4)):
+                explicit.add(date(yr, mo, int(day_str)))
+        except ValueError:
+            pass
+
     # ① YYYYMMDD 単発
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
@@ -1010,11 +1021,6 @@ def main():
 
             if att_text.strip():
                 ok, store, dates, diff = verify(subject, att_text)
-                # 起案は添付の日付を正として使用（件名は「20260507-08_14-15」等の省略形の場合があるため）
-                if kind == "起案" and ok:
-                    a_dates = extract_dates(att_text)
-                    if a_dates:
-                        dates = sorted(a_dates)
             else:
                 # 添付なし → 件名のみ
                 print("    [添付なし] 件名のみで処理")
