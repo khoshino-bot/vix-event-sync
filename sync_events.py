@@ -1010,6 +1010,11 @@ def main():
 
             if att_text.strip():
                 ok, store, dates, diff = verify(subject, att_text)
+                # 起案は添付の日付を正として使用（件名は「20260507-08_14-15」等の省略形の場合があるため）
+                if kind == "起案" and ok:
+                    a_dates = extract_dates(att_text)
+                    if a_dates:
+                        dates = sorted(a_dates)
             else:
                 # 添付なし → 件名のみ
                 print("    [添付なし] 件名のみで処理")
