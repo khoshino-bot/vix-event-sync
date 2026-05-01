@@ -13,6 +13,14 @@ on:
         options:
           - 'false'
           - 'true'
+      notify_email:
+        description: '相違通知メールを送信する'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   sync:
@@ -47,7 +55,7 @@ jobs:
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
           KPI_SPREADSHEET_ID:   ${{ secrets.KPI_SPREADSHEET_ID }}
           SENDER_DOMAIN:        "vix.co.jp"
-          NOTIFY_EMAIL:         "true"
+          NOTIFY_EMAIL:         ${{ github.event.inputs.notify_email || 'false' }}
           OWNER_EMAIL:          "k.hoshino@vix.co.jp"
           # TARGET_SHEET, FILTER_YYYYMM は当月を自動検出（毎月変更不要）
           RESET_PROCESSED:      ${{ github.event.inputs.reset_processed || 'false' }}
