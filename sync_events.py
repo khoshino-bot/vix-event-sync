@@ -27,7 +27,7 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1ia4DThYgqZ3WdyeoQcBpKj5c_t8b
 PROCESSED_FILE = "processed_ids.json"
 SENDER_DOMAIN  = os.environ.get("SENDER_DOMAIN", "vix.co.jp")
 # 相違通知メールの送信（デフォルト有効）
-NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "true").lower() == "true"
+NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "false").lower() == "true"
 # 相違通知メールの CC 先（管理者）
 OWNER_EMAIL    = os.environ.get("OWNER_EMAIL", "k.hoshino@vix.co.jp")
 # RESET_PROCESSED=true で処理済みキャッシュを無視（シート再投入時に使用）
@@ -151,6 +151,14 @@ def extract_dates(text):
         except ValueError:
             pass
 
+    # ① YYYY/MM/DD 形式（Excelのセルや件名でよく使われるスラッシュ区切り）
+    # 例: "2026/04/03" or "2025/11/19"
+    for m in re.finditer(r'(20\d{2})/(\d{1,2})/(\d{1,2})', text):
+        try:
+            explicit.add(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            pass
+
     # ① YYYYMMDD 単発
     for m in re.finditer(r'(20\d{2})(\d{2})(\d{2})', text):
         try:
@@ -258,8 +266,15 @@ def extract_dates(text):
         except ValueError:
             pass
 
-    # コンテキスト年: テキスト内の明示年の最頻値（なければ今年）
-    explicit_years = [int(y) for y in re.findall(r'(20\d{2})年', text)]
+    # 1年以上前の日付はテンプレート固定日付などのノイズとして除外
+    explicit = {d for d in explicit if d.year >= cur_year - 1}
+
+    # コンテキスト年: explicit から取れた年 + YYYY年 の年 の最頻値（なければ今年）
+    # YYYYMMDD / YYYY/MM/DD / YYYY-MM-DD で明示された年も ctx_year に反映する
+    explicit_years = (
+        [d.year for d in explicit]
+        + [int(y) for y in re.findall(r'(20\d{2})年', text)]
+    )
     ctx_year = Counter(explicit_years).most_common(1)[0][0] if explicit_years else cur_year
 
     explicit_md = {(d.month, d.day) for d in explicit}
@@ -401,12 +416,19 @@ def verify(subject, att_text):
         diffs.append(f"店舗: 件名={s_store} / 添付={a_store}")
 
     s_set, a_set = set(s_dates), set(a_dates)
-    # 「件名の日付が添付に含まれているか」だけ確認する。
+
+    # 年だけ違う同一月日を「一致」とみなす（コンテキスト年ズレ対策）
+    # 例: subject=date(2026,4,3) / attachment=date(2025,4,3) → 同じ4/3として扱う
+    s_md = {(d.month, d.day) for d in s_set}
+    a_md = {(d.month, d.day) for d in a_set}
+
+    # 「件名の月日が添付の月日に含まれているか」で判定
     # 添付には月間スケジュール等で余分な日付が含まれる場合があるため
     # 「添付のみの日付」は不一致とみなさない。
-    only_subject = sorted(s_set - a_set)
-    if only_subject:
-        diffs.append(f"件名の日付が添付に見つかりません: {only_subject}")
+    only_subject_md = sorted(s_md - a_md)
+    if only_subject_md:
+        dates_str = "、".join(f"{mo}月{dy}日" for mo, dy in only_subject_md)
+        diffs.append(f"件名の日付が添付に見つかりません: {dates_str}")
 
     if diffs:
         # 返却する dates は件名の日付を優先（添付の余分な日付は除外）
@@ -417,66 +439,84 @@ def verify(subject, att_text):
 
 # ===== 通知メール =====
 def send_discrepancy_email(gmail_svc, original_msg, subject, diff_msg):
+    """
+    相違が検出された場合、管理者（OWNER_EMAIL）にのみ確認メールを送る。
+    管理者が内容を確認し、必要であれば手動で送信者に連絡する。
+    """
+    if not OWNER_EMAIL:
+        print("    → OWNER_EMAIL 未設定のため通知スキップ")
+        return
     headers = {h["name"]: h["value"] for h in original_msg["payload"]["headers"]}
     raw_from = headers.get("From", "")
-    # 表示名付き "名前 <email@domain>" からメールアドレスのみ抽出
-    _, addr = email_utils.parseaddr(raw_from)
-    to   = addr if addr else raw_from
-    subj = "Re: " + headers.get("Subject", "")
-    body = f"""お疲れ様です。
-イベント申請の件名と添付ファイルの内容が合っていないようです。確認していただけますか？
+    _, sender_addr = email_utils.parseaddr(raw_from)
+    sender_addr = sender_addr if sender_addr else raw_from
+    orig_subject = headers.get("Subject", "")
+    subj = f"[要確認] {orig_subject}"
+    body = f"""自動チェックで件名と添付の相違が検出されました。内容を確認してください。
 
-【気になった箇所】
+【送信者】
+{raw_from}
+
+【元の件名】
+{orig_subject}
+
+【検出された相違】
 {diff_msg}
 
-問題なければそのままで大丈夫です。修正が必要な場合は再送をお願いします。
-再送する場合は件名の前に「再送」をつけてください。
-
----
+─────────────────────────────
+問題なし → 対応不要です（シートへの入力は既に完了しています）
+修正が必要 → {sender_addr} に直接連絡してください
+─────────────────────────────
 このメールは自動送信です。
 """
     msg_obj = MIMEText(body, "plain", "utf-8")
-    msg_obj["To"]      = to
+    msg_obj["To"]      = OWNER_EMAIL
     msg_obj["Subject"] = subj
-    # 管理者（OWNER_EMAIL）を CC に追加
-    if OWNER_EMAIL and OWNER_EMAIL != to:
-        msg_obj["Cc"] = OWNER_EMAIL
     encoded = base64.urlsafe_b64encode(msg_obj.as_bytes()).decode()
     gmail_svc.users().messages().send(
         userId="me", body={"raw": encoded}
     ).execute()
-    cc_info = f" / CC: {OWNER_EMAIL}" if OWNER_EMAIL and OWNER_EMAIL != to else ""
-    print(f"    → 通知メール送信: {to}{cc_info}")
+    print(f"    → 要確認メール送信: {OWNER_EMAIL}（送信者: {sender_addr}）")
 
 def send_missing_proposal_email(gmail_svc, original_msg, store, dates):
-    """振り返りメールが届いたが対応する起案行がない場合に送信者へ通知する"""
+    """
+    振り返りメールが届いたが対応する起案行がない場合、管理者（OWNER_EMAIL）にのみ通知する。
+    管理者が確認し、必要であれば送信者に連絡する。
+    """
+    if not OWNER_EMAIL:
+        print("    → OWNER_EMAIL 未設定のため通知スキップ")
+        return
     headers = {h["name"]: h["value"] for h in original_msg["payload"]["headers"]}
-    _, addr = email_utils.parseaddr(headers.get("From", ""))
-    to   = addr if addr else headers.get("From", "")
-    subj = "Re: " + headers.get("Subject", "")
-    date_str = "、".join(str(d) for d in sorted(dates))
-    body = f"""お疲れ様です。
-振り返り報告を受け取りましたが、対応するイベント起案が見つかりませんでした。
+    raw_from = headers.get("From", "")
+    _, sender_addr = email_utils.parseaddr(raw_from)
+    sender_addr = sender_addr if sender_addr else raw_from
+    orig_subject = headers.get("Subject", "")
+    subj = f"[要確認] 起案未登録の振り返り: {store}"
+    date_str = "、".join(d.strftime("%Y/%m/%d") for d in sorted(dates))
+    body = f"""振り返り報告に対応する起案がシートに見つかりませんでした。
+
+【送信者】
+{raw_from}
+
+【元の件名】
+{orig_subject}
 
 【対象】
 店舗: {store}
 日付: {date_str}
 
-起案メールをまだ送っていない場合は送ってください。
-既に送っている場合は件名や日付の書き方を確認していただけますか？
-
----
+─────────────────────────────
+起案メール未着 → {sender_addr} に起案を送るよう連絡してください
+起案済みで行がない → シートを手動で確認してください
+─────────────────────────────
 このメールは自動送信です。
 """
     msg_obj = MIMEText(body, "plain", "utf-8")
-    msg_obj["To"]      = to
+    msg_obj["To"]      = OWNER_EMAIL
     msg_obj["Subject"] = subj
-    if OWNER_EMAIL and OWNER_EMAIL != to:
-        msg_obj["Cc"] = OWNER_EMAIL
     encoded = base64.urlsafe_b64encode(msg_obj.as_bytes()).decode()
     gmail_svc.users().messages().send(userId="me", body={"raw": encoded}).execute()
-    cc_info = f" / CC: {OWNER_EMAIL}" if OWNER_EMAIL and OWNER_EMAIL != to else ""
-    print(f"    → 起案なし通知メール送信: {to}{cc_info}")
+    print(f"    → 起案なし通知メール送信: {OWNER_EMAIL}（送信者: {sender_addr}）")
 
 # ===== シート操作 =====
 def get_current_sheet_name():
@@ -1002,21 +1042,33 @@ def main():
                         # 行番号が変わっているので再読み込み
                         row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
 
+                matched_current_month = False
                 for d in dates:
                     # 対象年月フィルタ
                     if FILTER_YM and (d.year, d.month) != FILTER_YM:
                         continue
+                    matched_current_month = True
                     date_rows, row_map = insert_event_row(
                         sheets_svc, sheet_name, store, d, date_rows, row_map,
                         sheet_id, first_formatted_row
                     )
                     updated += 1
+
+                # 当月の日付がひとつもなければ処理済みにしない（翌月に再処理させる）
+                if not matched_current_month:
+                    print(f"    [当月対象外] {dates} → 来月以降に再処理")
+                    continue
             else:
+                # フィルタ対象外の日付のみの振り返りは「起案なし」扱いしない
+                filtered_dates = [d for d in dates
+                                  if not FILTER_YM or (d.year, d.month) == FILTER_YM]
+                if not filtered_dates:
+                    # 処理済みにしない → 来月以降に再処理される
+                    print(f"    [当月対象外] {dates} → 来月以降に再処理")
+                    continue
+
                 matched = False
-                for d in dates:
-                    # 対象年月フィルタ
-                    if FILTER_YM and (d.year, d.month) != FILTER_YM:
-                        continue
+                for d in filtered_dates:
                     key = (store, d)
                     if key in row_map:
                         u = update_cell(sheets_svc, sheet_name, row_map[key], "振り返り")
@@ -1025,9 +1077,9 @@ def main():
                             updated += 1
                         matched = True
                 if not matched:
-                    print(f"    [行なし] {store} {dates} → 起案なし通知を送信")
+                    print(f"    [行なし] {store} {filtered_dates} → 起案なし通知を送信")
                     if NOTIFY_EMAIL:
-                        send_missing_proposal_email(gmail_svc, msg, store, dates)
+                        send_missing_proposal_email(gmail_svc, msg, store, filtered_dates)
                     else:
                         print("    → 通知メール送信: スキップ（NOTIFY_EMAIL=false）")
                     processed.add(m["id"])
