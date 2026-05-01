@@ -55,7 +55,7 @@ STORE_MAP = {
 STORE_ORDER = ["竹ノ塚", "三軒茶屋", "日暮里", "町田", "木の葉", "立川", "経堂", "ゆめが丘"]
 
 # ===== KPI スプレッドシート設定 =====
-KPI_SPREADSHEET_ID = os.environ.get("KPI_SPREADSHEET_ID", "")
+KPI_SPREADSHEET_ID = os.environ.get("KPI_SPREADSHEET_ID", "1GjQ-dtbG0Cx_jv6B1i_HCNT5vqVsgborkUMz-7rY_dc")
 KPI_SHEET_NAME     = os.environ.get("KPI_SHEET_NAME", "貼り付け")
 
 # シートのD列（店舗名）→ KPI C列（楽天店舗名）のマッピング
@@ -812,36 +812,45 @@ def categorize_kpi_row(j_val: str) -> dict:
 
 def fill_kpi_columns(sheets_svc, event_sheet_name: str):
     """
-    X〜AA列: イベント日と一致したｸﾛｰｻﾞｰ実績を各イベント行に書き込む。
-    AD〜AH列: イベント日以外のｸﾛｰｻﾞｰ獲得数（戻り）を店舗ごとに集計して固定位置に書き込む。
-      行1=セクションタイトル、行2=ヘッダー、行3〜10=STORE_ORDER順の店舗別合計。
+    X〜AA列: イベント日・店舗に一致する実績（MNP/ひかり/Turbo/クレカ）を各イベント行に書き込む。
+    AD〜AH列: イベント日以外の獲得数（戻り）を店舗ごとに集計して固定位置に書き込む。
+      行1=セクションタイトル、行3=ヘッダー、行4〜=STORE_ORDER順の店舗別合計。
+    KPI貼り付けシート列構造: A=注文ID, B=日付, C=店舗, D=スタッフ名, J=商品名, K=数量(負=キャンセル)
     """
     print("\n=== KPI列入力開始 ===")
 
-    # ① KPI 貼り付けシート全行取得
+    # ① KPI 貼り付けシート全行取得（K列まで）
+    # 列構造: A=注文ID, B=日付(YY/MM/DD), C=店舗, D=スタッフ名,
+    #         E=種別, F=支払, G/H=空, I=コード, J=商品名, K=数量(負=キャンセル)
     kpi_rows = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=KPI_SPREADSHEET_ID,
-        range=f"'{KPI_SHEET_NAME}'!A1:J10000"
+        range=f"'{KPI_SHEET_NAME}'!A1:K10000"
     )).get("values", [])
     print(f"KPI総行数: {len(kpi_rows)}")
 
-    # ② ｸﾛｰｻﾞｰ行を (date, kpi_store) キーで集計
+    # ② (date, kpi_store) キーで集計。K列が負のキャンセル行は除外。
     kpi_counts: dict = {}
     for row in kpi_rows:
-        d_role = row[3].strip() if len(row) > 3 else ""
-        if d_role != "ｸﾛｰｻﾞｰ":
+        # K列（index 10）が負ならキャンセル行として除外
+        try:
+            k_val = int(row[10]) if len(row) > 10 and row[10].strip() else 1
+        except (ValueError, AttributeError):
+            k_val = 1
+        if k_val < 0:
             continue
         d = parse_kpi_date(row[1] if len(row) > 1 else "")
         if not d:
             continue
         c_store = row[2].strip() if len(row) > 2 else ""
+        if not c_store:
+            continue
         key = (d, c_store)
         if key not in kpi_counts:
             kpi_counts[key] = {"mnp": 0, "hikari": 0, "turbo": 0, "card": 0}
         cats = categorize_kpi_row(row[9] if len(row) > 9 else "")
         for k in cats:
             kpi_counts[key][k] += cats[k]
-    print(f"ｸﾛｰｻﾞｰ集計: {len(kpi_counts)}キー")
+    print(f"実績集計: {len(kpi_counts)}キー（日付×店舗）")
 
     # ③ イベントシート読み込み（A1:AA200）
     event_rows = execute_with_retry(sheets_svc.spreadsheets().values().get(
