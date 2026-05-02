@@ -564,7 +564,7 @@ def load_sheet_rows(sheets_svc, sheet_name):
             continue
         try:
             d = datetime.strptime(date_str, "%Y/%m/%d").date()
-            row_map[(store, d)] = i + 1
+            row_map.setdefault((store, d), []).append(i + 1)
             date_rows.append((store_sort_key(store), d, i + 1))
         except ValueError:
             pass
@@ -618,7 +618,7 @@ def delete_rows_by_dates(sheets_svc, sheet_name, sheet_id, target_dates, row_map
     """
     target_set = set(target_dates)
     rows_to_delete = sorted(
-        [row_num for (_, d), row_num in row_map.items() if d in target_set],
+        [rn for (_, d), rns in row_map.items() if d in target_set for rn in rns],
         reverse=True,
     )
     if not rows_to_delete:
@@ -706,16 +706,12 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
                      first_formatted_row=4):
     """
     重複チェック付き行挿入。
-    - (store, d) が既に row_map に存在する場合はスキップ
+    - 同じ (store, d) が既存でも複数行を許可（急遽追加イベント対応）
     - inheritFromBefore の選択:
         insert_at > first_formatted_row → True（上の行から書式継承）
         insert_at <= first_formatted_row → False（下の行=例行から書式継承）
       これにより例行より前の日付でもドロップダウン書式が正しく引き継がれる
     """
-    if (store, d) in row_map:
-        print(f"    → スキップ(既存): {store} {d}")
-        return date_rows, row_map
-
     # 店舗順・日付順の挿入位置を決定
     new_key = (store_sort_key(store), d)
     insert_at = 4
@@ -779,8 +775,9 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
     # メモリ上で date_rows と row_map を更新（行挿入で以降の行番号が+1ずれる）
     new_date_rows = [(sk, dt, rn + 1) if rn >= insert_at else (sk, dt, rn) for sk, dt, rn in date_rows]
     new_date_rows.append((store_sort_key(store), d, insert_at))
-    new_row_map   = {(s, dt): (rn + 1 if rn >= insert_at else rn) for (s, dt), rn in row_map.items()}
-    new_row_map[(store, d)] = insert_at
+    new_row_map = {(s, dt): [rn + 1 if rn >= insert_at else rn for rn in rns]
+                  for (s, dt), rns in row_map.items()}
+    new_row_map.setdefault((store, d), []).append(insert_at)
     return sorted(new_date_rows), new_row_map
 
 def update_cell(sheets_svc, sheet_name, row_num, col):
@@ -1024,10 +1021,10 @@ def main():
     # 失敗した場合の自己修復フォールバック）
     sheet_id = ensure_current_sheet(sheets_svc, sheet_name)
     # 重複行クリーンアップ（過去の実行で残ったデータを除去）
-    deduplicate_sheet(sheets_svc, sheet_name, sheet_id)
+    # deduplicate_sheet は同店舗・同日の複数イベントを許可するため呼ばない
     row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
     # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
-    first_formatted_row = min(row_map.values()) if row_map else 4
+    first_formatted_row = min((rn for rns in row_map.values() for rn in rns), default=4)
     print(f"既存行数: {len(row_map)}  書式基準行: {first_formatted_row}")
 
     updated = 0
@@ -1130,10 +1127,11 @@ def main():
                 for d in filtered_dates:
                     key = (store, d)
                     if key in row_map:
-                        u = update_cell(sheets_svc, sheet_name, row_map[key], "振り返り")
-                        print(f"    → {store} {d} 行{row_map[key]} 振り返り {'✓' if u else '(既存)'}")
-                        if u:
-                            updated += 1
+                        for rn in row_map[key]:
+                            u = update_cell(sheets_svc, sheet_name, rn, "振り返り")
+                            print(f"    → {store} {d} 行{rn} 振り返り {'✓' if u else '(既存)'}")
+                            if u:
+                                updated += 1
                         matched = True
                 if not matched:
                     print(f"    [行なし] {store} {filtered_dates} → 起案なし通知を送信")
