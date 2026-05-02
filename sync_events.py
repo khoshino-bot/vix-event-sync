@@ -768,9 +768,9 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{sheet_name}'!B{insert_at}:E{insert_at}",
         valueInputOption="RAW",
-        body={"values": [["〇", "", store, d.strftime("%Y/%m/%d")]]}
+        body={"values": [["○", "", store, d.strftime("%Y/%m/%d")]]}
     ))
-    print(f"    → 行{insert_at}に挿入: {store} {d} 起案〇")
+    print(f"    → 行{insert_at}に挿入: {store} {d} 起案○")
 
     # メモリ上で date_rows と row_map を更新（行挿入で以降の行番号が+1ずれる）
     new_date_rows = [(sk, dt, rn + 1) if rn >= insert_at else (sk, dt, rn) for sk, dt, rn in date_rows]
@@ -786,11 +786,11 @@ def update_cell(sheets_svc, sheet_name, row_num, col):
     cur  = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID, range=cell
     ))
-    if cur.get("values", [[""]])[0][0] == "〇":
+    if cur.get("values", [[""]])[0][0] == "○":
         return False
     execute_with_retry(sheets_svc.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=cell,
-        valueInputOption="RAW", body={"values": [["〇"]]}
+        valueInputOption="RAW", body={"values": [["○"]]}
     ))
     return True
 
