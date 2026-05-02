@@ -98,8 +98,11 @@ def save_processed(ids):
 
 # ===== 情報抽出（正規表現）=====
 def nkfc(text: str) -> str:
-    """全角英数字・記号を半角に正規化（全角スラッシュ・チルダ等も対応）"""
-    return unicodedata.normalize('NFKC', text)
+    """全角英数字・記号を半角に正規化。ダッシュ系文字（エンダッシュ等）もハイフンに統一。"""
+    text = unicodedata.normalize('NFKC', text)
+    # EN DASH / EM DASH / FIGURE DASH / MINUS SIGN → ハイフンマイナスに統一
+    text = re.sub(r'[‐‑‒–—−]', '-', text)
+    return text
 
 def normalize_store(text):
     text = nkfc(text)
@@ -316,7 +319,13 @@ def extract_dates(text):
         add_range_implicit(int(m.group(1)), int(m.group(2)),
                            int(m.group(3)), int(m.group(4)))
 
-    # ⑥ M月D〜D日 同月範囲 (例: 12月8〜12日, 4/16~27日)
+    # ⑥ M月D日〜D日 同月範囲（始点に「日」あり 例: 4月6日~10日）
+    for m in re.finditer(r'(\d{1,2})月(\d{1,2})日' + SEP + r'(\d{1,2})日', text):
+        mo = int(m.group(1))
+        d1, d2 = int(m.group(2)), int(m.group(3))
+        add_range_implicit(mo, d1, mo, d2)
+
+    # ⑥b M月D〜D日 同月範囲（始点に「日」なし 例: 12月8〜12日）
     for m in re.finditer(r'(\d{1,2})月(\d{1,2})' + SEP + r'(\d{1,2})日', text):
         mo = int(m.group(1))
         d1, d2 = int(m.group(2)), int(m.group(3))
