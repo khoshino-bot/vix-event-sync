@@ -767,8 +767,8 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
     execute_with_retry(sheets_svc.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{sheet_name}'!B{insert_at}:E{insert_at}",
-        valueInputOption="RAW",
-        body={"values": [["○", "", store, d.strftime("%Y/%m/%d")]]}
+        valueInputOption="USER_ENTERED",
+        body={"values": [["〇", "", store, d.strftime("%Y/%m/%d")]]}
     ))
     print(f"    → 行{insert_at}に挿入: {store} {d} 起案○")
 
@@ -786,11 +786,11 @@ def update_cell(sheets_svc, sheet_name, row_num, col):
     cur  = execute_with_retry(sheets_svc.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID, range=cell
     ))
-    if cur.get("values", [[""]])[0][0] == "○":
+    if cur.get("values", [[""]])[0][0] == "〇":
         return False
     execute_with_retry(sheets_svc.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=cell,
-        valueInputOption="RAW", body={"values": [["○"]]}
+        valueInputOption="USER_ENTERED", body={"values": [["〇"]]}
     ))
     return True
 
@@ -1020,8 +1020,8 @@ def main():
     # シートが存在しなければテンプレートから自動作成（月初の create_monthly_sheet.yml が
     # 失敗した場合の自己修復フォールバック）
     sheet_id = ensure_current_sheet(sheets_svc, sheet_name)
-    # 重複行クリーンアップ（過去の実行で残ったデータを除去）
-    # deduplicate_sheet は同店舗・同日の複数イベントを許可するため呼ばない
+    # 重複行クリーンアップ（同一店舗・同一日付の重複行を削除して最新行を保持）
+    deduplicate_sheet(sheets_svc, sheet_name, sheet_id)
     row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
     # 最初にデータが存在する最小行番号 = 書式（ドロップダウン）が整った基準行
     first_formatted_row = min((rn for rns in row_map.values() for rn in rns), default=4)
@@ -1104,10 +1104,16 @@ def main():
                     if FILTER_YM and (d.year, d.month) != FILTER_YM:
                         continue
                     matched_current_month = True
-                    date_rows, row_map = insert_event_row(
-                        sheets_svc, sheet_name, store, d, date_rows, row_map,
-                        sheet_id, first_formatted_row
-                    )
+                    if (store, d) in row_map:
+                        # 既存行あり → 重複挿入を防ぐため起案○のみ更新
+                        for rn in row_map[(store, d)]:
+                            update_cell(sheets_svc, sheet_name, rn, "起案")
+                        print(f"    → 既存行を更新: {store} {d} 起案○ (行{row_map[(store, d)]})")
+                    else:
+                        date_rows, row_map = insert_event_row(
+                            sheets_svc, sheet_name, store, d, date_rows, row_map,
+                            sheet_id, first_formatted_row
+                        )
                     updated += 1
 
                 # 当月の日付がひとつもなければ処理済みにしない（翌月に再処理させる）
