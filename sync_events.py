@@ -1096,6 +1096,12 @@ def main():
                 continue
 
             if kind == "起案":
+                # 返信メール（Re: / Fwd:）はイベント起案でなく単なるスレッドなのでスキップ
+                if re.match(r'^(Re|RE|Fwd|FWD)\s*:', subject.strip()):
+                    print("    [SKIP] 返信メールのため起案処理をスキップ")
+                    processed.add(m["id"])
+                    continue
+
                 # 「再送」で始まる件名は古い行を削除してから挿入（店舗・日付が修正された場合も対応）
                 is_resend = bool(re.match(r'^(再送\s*)+', subject.strip()))
                 if is_resend:
