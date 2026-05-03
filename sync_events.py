@@ -1036,6 +1036,10 @@ def main():
         if kind == "振り返り":
             row_map, date_rows = load_sheet_rows(sheets_svc, sheet_name)
 
+        # 起案: (store, date) ごとに今回処理したメール件数を追跡
+        # → 既存スロット数と比較して「更新 or 追加挿入」を決める
+        seen_counts: dict = {}
+
         # ページネーションで全件取得（maxResults=50 の打ち切りを防ぐ）
         messages = []
         page_token = None
@@ -1104,12 +1108,18 @@ def main():
                     if FILTER_YM and (d.year, d.month) != FILTER_YM:
                         continue
                     matched_current_month = True
-                    if (store, d) in row_map:
-                        # 既存行あり → 重複挿入を防ぐため起案○のみ更新
-                        for rn in row_map[(store, d)]:
-                            update_cell(sheets_svc, sheet_name, rn, "起案")
-                        print(f"    → 既存行を更新: {store} {d} 起案○ (行{row_map[(store, d)]})")
+                    key = (store, d)
+                    seen_counts[key] = seen_counts.get(key, 0) + 1
+                    existing_rows = row_map.get(key, [])
+                    slot_idx = seen_counts[key] - 1  # 今回が何件目か（0始まり）
+
+                    if slot_idx < len(existing_rows):
+                        # 既存スロットあり → 該当行を更新（重複挿入しない）
+                        row_num = existing_rows[slot_idx]
+                        update_cell(sheets_svc, sheet_name, row_num, "起案")
+                        print(f"    → 既存行を更新: {store} {d} 起案〇 (行{row_num}, {slot_idx+1}/{len(existing_rows)}件目)")
                     else:
+                        # 既存スロット不足 → 新規行を挿入（2人目以降のケース）
                         date_rows, row_map = insert_event_row(
                             sheets_svc, sheet_name, store, d, date_rows, row_map,
                             sheet_id, first_formatted_row
