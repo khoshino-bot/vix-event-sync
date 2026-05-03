@@ -728,24 +728,28 @@ def insert_event_row(sheets_svc, sheet_name, store, d, date_rows, row_map, sheet
     template_row_0 = first_formatted_row - 1  # 常に固定テンプレート行（0-indexed）
     new_row_0      = insert_at - 1
 
-    # M:T列(12-19) と V:W列(21-22) の数式を明示的にコピー（数式のセル参照を新行に合わせて調整）
-    formula_ranges = [(12, 20), (21, 23)]  # (startColumnIndex, endColumnIndex) 0-indexed
+    # insertDimension で新行を挿入すると、挿入位置がテンプレート行以前の場合に
+    # テンプレート行が1行ずれる。copyPaste はその後に実行されるため、
+    # ずれた後の正しい行インデックスを使う必要がある。
+    template_row_0_for_copy = template_row_0 + 1 if new_row_0 <= template_row_0 else template_row_0
+
+    # M:W列(12-22) の数式を明示的にコピー（数式のセル参照を新行に合わせて調整）
+    # 注意: endColumnIndex は exclusive なので W列(22)の場合は 23 を指定
     copy_requests = [
         {"copyPaste": {
             "source": {
                 "sheetId": sheet_id,
-                "startRowIndex": template_row_0, "endRowIndex": template_row_0 + 1,
-                "startColumnIndex": c_start,     "endColumnIndex": c_end,
+                "startRowIndex": template_row_0_for_copy, "endRowIndex": template_row_0_for_copy + 1,
+                "startColumnIndex": 12,                   "endColumnIndex": 23,
             },
             "destination": {
                 "sheetId": sheet_id,
-                "startRowIndex": new_row_0,      "endRowIndex": new_row_0 + 1,
-                "startColumnIndex": c_start,     "endColumnIndex": c_end,
+                "startRowIndex": new_row_0,               "endRowIndex": new_row_0 + 1,
+                "startColumnIndex": 12,                   "endColumnIndex": 23,
             },
             "pasteType": "PASTE_FORMULA",
             "pasteOrientation": "NORMAL",
         }}
-        for c_start, c_end in formula_ranges
     ]
 
     execute_with_retry(sheets_svc.spreadsheets().batchUpdate(
